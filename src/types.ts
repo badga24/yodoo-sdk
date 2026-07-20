@@ -9,31 +9,49 @@ export interface GeoLocation {
   lng: number;
 }
 
+export type ModelFileType = "COVER" | "OTHER" | "LOGO";
+
 export interface FileRef {
   id: string;
   name: string;
   ratio: number;
   contentType: string;
   contentLength: number;
-  modelFileType: string;
+  modelFileType: ModelFileType;
   uploadedBy: string;
   createdAt: string;
 }
 
+export type ContactType =
+  | "PHONE"
+  | "EMAIL"
+  | "WHATSAPP"
+  | "INSTAGRAM"
+  | "FACEBOOK"
+  | "TIKTOK"
+  | "TWITTER"
+  | "YOUTUBE"
+  | "LINKEDIN"
+  | "TELEGRAM"
+  | "SNAPCHAT"
+  | "WEBSITE";
+
 export interface Contact {
   id: string;
   value: string;
-  type: string;
+  type: ContactType;
   isVerified: boolean;
   createdAt: string;
   updatedAt: string;
 }
 
+export type AvailabilityFrequency = "WEEKLY" | "MONTHLY" | "YEARLY";
+
 export interface Availability {
   id: string;
   startDate: string;
   endDate: string;
-  frequency: string;
+  frequency: AvailabilityFrequency;
 }
 
 export interface PaymentMethod {
@@ -92,6 +110,8 @@ export interface Provider {
   planName: string;
 }
 
+export type OfferStatus = "ACTIVE" | "VISIBLE" | "BLOCKED";
+
 export interface Offer {
   id: string;
   name: string;
@@ -101,7 +121,7 @@ export interface Offer {
   availabilities: Availability[];
   images: FileRef[];
   catalogue: Catalogue;
-  status: string;
+  status: OfferStatus;
   provider: Provider;
   totalRating: number;
   ratingCount: number;

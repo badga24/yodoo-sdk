@@ -1,6 +1,6 @@
 {
   "name": "yodoo-sdk",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Client TypeScript typé pour l'API Yodoo LocaleApp (catalogues, offres, prix, disponibilités, contacts).",
   "license": "UNLICENSED",
   "type": "module",
