@@ -27,8 +27,6 @@ import { YodooClient } from "yodoo-sdk";
 const yodoo = new YodooClient({
   appId: process.env.YODOO_APP_ID!,
   appSecret: process.env.YODOO_APP_SECRET!,
-  // Optionnel — défaut : "http://localhost:9090/api"
-  apiBaseUrl: process.env.YODOO_API_BASE_URL,
 });
 
 const provider = await yodoo.getProvider();
@@ -54,7 +52,6 @@ import { YodooClient } from "yodoo-sdk";
 export const yodoo = new YodooClient({
   appId: process.env.YODOO_APP_ID!,
   appSecret: process.env.YODOO_APP_SECRET!,
-  apiBaseUrl: process.env.YODOO_API_BASE_URL,
 });
 ```
 
@@ -62,11 +59,12 @@ export const yodoo = new YodooClient({
 
 ### `new YodooClient(options)`
 
-| Option | Requis | Défaut | Description |
-|---|---|---|---|
-| `appId` | oui | — | Fourni par le propriétaire du commerce |
-| `appSecret` | oui | — | Fourni par le propriétaire du commerce, jamais côté navigateur |
-| `apiBaseUrl` | non | `http://localhost:9090/api` | À confirmer avec l'opérateur du backend en prod |
+Le client contacte toujours `https://yodoo.space/api` — ce n'est pas configurable.
+
+| Option | Requis | Description |
+|---|---|---|
+| `appId` | oui | Fourni par le propriétaire du commerce |
+| `appSecret` | oui | Fourni par le propriétaire du commerce, jamais côté navigateur |
 
 ### Méthodes (toutes les routes `/locale/app/**`)
 
@@ -110,7 +108,8 @@ try {
 
 - `formatMoney(amountMinorUnits, currency, locale?)` — formate un prix (entier en plus
   petite unité de devise, ex. centimes) en chaîne lisible via `Intl.NumberFormat`.
-- `buildFileUrl(apiBaseUrl, fileId)` — équivalent autonome de `client.getFileUrl(fileId)`.
+- `buildFileUrl(apiBaseUrl, fileId)` — équivalent autonome de `client.getFileUrl(fileId)`, pour
+  construire l'URL d'un fichier à partir d'une base d'API arbitraire.
 
 ## Notes
 

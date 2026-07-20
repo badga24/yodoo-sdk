@@ -19,15 +19,14 @@ import type {
 /** API-imposed page size ceiling (LocaleApp-integration-guide.md §2). */
 const MAX_PAGE_SIZE = 30;
 
-const DEFAULT_API_BASE_URL = "http://localhost:9090/api";
+/** Seul backend Yodoo pris en charge — non configurable. */
+const API_BASE_URL = "https://yodoo.space/api";
 
 export interface YodooClientOptions {
   /** Identifiant de l'app, fourni par le propriétaire du commerce (guide §1.1). */
   appId: string;
   /** Secret de l'app — ne jamais l'exposer côté navigateur (guide §1.4). */
   appSecret: string;
-  /** Défaut : "http://localhost:9090/api". En prod, à confirmer avec l'opérateur du backend. */
-  apiBaseUrl?: string;
 }
 
 function pageQuery(params?: PageParams): QueryParams {
@@ -50,22 +49,17 @@ function pageQuery(params?: PageParams): QueryParams {
  * (CORS + appSecret ne doit jamais atteindre le navigateur).
  */
 export class YodooClient {
-  private readonly apiBaseUrl: string;
   private readonly http: HttpClient;
   private readonly tokenProvider: TokenProvider;
 
   constructor(options: YodooClientOptions) {
-    this.apiBaseUrl = (options.apiBaseUrl ?? DEFAULT_API_BASE_URL).replace(
-      /\/$/,
-      ""
-    );
     this.tokenProvider = new TokenProvider({
-      apiBaseUrl: this.apiBaseUrl,
+      apiBaseUrl: API_BASE_URL,
       appId: options.appId,
       appSecret: options.appSecret,
     });
     this.http = new HttpClient({
-      baseUrl: this.apiBaseUrl,
+      baseUrl: API_BASE_URL,
       tokenProvider: this.tokenProvider,
     });
   }
@@ -150,7 +144,7 @@ export class YodooClient {
    * (guide §3) — ne pas utiliser les URLs presignées, non fiables.
    */
   getFileUrl(fileId: string): string {
-    return buildFileUrl(this.apiBaseUrl, fileId);
+    return buildFileUrl(API_BASE_URL, fileId);
   }
 
   /** Force le renouvellement du token au prochain appel (ex. après une révocation manuelle). */
