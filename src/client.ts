@@ -2,25 +2,29 @@ import { HttpClient, type QueryParams } from "./http-client.js";
 import { TokenProvider } from "./token-provider.js";
 import { buildFileUrl } from "./file-url.js";
 import type {
-  Availability,
-  Catalogue,
-  Contact,
+  CatalogueDetailDTO,
+  CatalogueTileDTO,
+  EventDetailDTO,
+  EventTileDTO,
   ListOffersParams,
-  Offer,
-  Page,
+  OfferDetailDTO,
+  OfferTileDTO,
+  PageDTO,
   PageParams,
-  PaymentMethod,
-  Price,
-  Provider,
-  TopOffers,
+  ProviderDetailDTO,
+  TopOffersDTO,
   TopOffersParams,
 } from "./types.js";
 
-/** API-imposed page size ceiling (LocaleApp-integration-guide.md §2). */
+/** API-imposed page size ceiling (docs/sdk/locale-app-v2.md §1). */
 const MAX_PAGE_SIZE = 30;
 
 /** Seul backend Yodoo pris en charge — non configurable. */
 const API_BASE_URL = "https://yodoo.space/api";
+
+/** GET /locale/app/top-offers n'a pas d'équivalent v2 (docs/sdk/locale-app-v2.md §1) — reste sur v1. */
+const V1_BASE = "/locale/app";
+const V2_BASE = "/locale/app/v2";
 
 export interface YodooClientOptions {
   /** Identifiant de l'app, fourni par le propriétaire du commerce (guide §1.1). */
@@ -41,7 +45,7 @@ function pageQuery(params?: PageParams): QueryParams {
 }
 
 /**
- * Client pour l'API Yodoo LocaleApp (ROLE_LOCALE_APP) : lecture seule des
+ * Client pour l'API Yodoo LocaleApp v2 (ROLE_LOCALE_APP) : lecture seule des
  * données du commerce (catalogues, offres, prix, disponibilités, contacts,
  * moyens de paiement) via un couple appId/appSecret.
  *
@@ -64,76 +68,79 @@ export class YodooClient {
     });
   }
 
-  /** GET /locale/app — détails du commerce rattaché à l'app. */
-  getProvider(): Promise<Provider> {
-    return this.http.get<Provider>("/locale/app");
+  /**
+   * GET /locale/app/v2 — détails du commerce, avec moyens de paiement,
+   * contacts et disponibilités inclus (remplace 4 appels v1 en un seul).
+   * Non caché côté serveur : toujours à jour.
+   */
+  getProvider(): Promise<ProviderDetailDTO> {
+    return this.http.get<ProviderDetailDTO>(V2_BASE);
   }
 
-  /** GET /locale/app/catalogues */
-  listCatalogues(params?: PageParams): Promise<Page<Catalogue>> {
-    return this.http.get<Page<Catalogue>>(
-      "/locale/app/catalogues",
+  /** GET /locale/app/v2/catalogues — vraie pagination serveur. */
+  listCatalogues(params?: PageParams): Promise<PageDTO<CatalogueTileDTO>> {
+    return this.http.get<PageDTO<CatalogueTileDTO>>(
+      `${V2_BASE}/catalogues`,
       pageQuery(params)
     );
   }
 
-  /** GET /locale/app/catalogues/{id} */
-  getCatalogue(id: string): Promise<Catalogue> {
-    return this.http.get<Catalogue>(
-      `/locale/app/catalogues/${encodeURIComponent(id)}`
+  /** GET /locale/app/v2/catalogues/{id} */
+  getCatalogue(id: string): Promise<CatalogueDetailDTO> {
+    return this.http.get<CatalogueDetailDTO>(
+      `${V2_BASE}/catalogues/${encodeURIComponent(id)}`
     );
   }
 
-  /** GET /locale/app/catalogues/{id}/offers */
+  /** GET /locale/app/v2/catalogues/{id}/offers */
   listCatalogueOffers(
     catalogueId: string,
     params?: PageParams
-  ): Promise<Page<Offer>> {
-    return this.http.get<Page<Offer>>(
-      `/locale/app/catalogues/${encodeURIComponent(catalogueId)}/offers`,
+  ): Promise<PageDTO<OfferTileDTO>> {
+    return this.http.get<PageDTO<OfferTileDTO>>(
+      `${V2_BASE}/catalogues/${encodeURIComponent(catalogueId)}/offers`,
       pageQuery(params)
     );
   }
 
-  /** GET /locale/app/offers */
-  listOffers(params?: ListOffersParams): Promise<Page<Offer>> {
-    return this.http.get<Page<Offer>>("/locale/app/offers", {
+  /** GET /locale/app/v2/offers */
+  listOffers(params?: ListOffersParams): Promise<PageDTO<OfferTileDTO>> {
+    return this.http.get<PageDTO<OfferTileDTO>>(`${V2_BASE}/offers`, {
       ...pageQuery(params),
       catalogue: params?.catalogue,
     });
   }
 
-  /** GET /locale/app/offers/{id}/prices */
-  getOfferPrices(offerId: string): Promise<Page<Price>> {
-    return this.http.get<Page<Price>>(
-      `/locale/app/offers/${encodeURIComponent(offerId)}/prices`
-    );
-  }
-
-  /** GET /locale/app/payment-methods */
-  listPaymentMethods(params?: PageParams): Promise<Page<PaymentMethod>> {
-    return this.http.get<Page<PaymentMethod>>(
-      "/locale/app/payment-methods",
+  /**
+   * GET /locale/app/v2/offers/{id} — détail d'une offre, avec ses prix (une
+   * page), ses images et son catalogue en un seul appel. `params` pagine
+   * `prices`, pas une liste d'offres (il n'y en a qu'une, celle demandée).
+   */
+  getOffer(id: string, params?: PageParams): Promise<OfferDetailDTO> {
+    return this.http.get<OfferDetailDTO>(
+      `${V2_BASE}/offers/${encodeURIComponent(id)}`,
       pageQuery(params)
     );
   }
 
-  /** GET /locale/app/availabilities */
-  listAvailabilities(): Promise<Page<Availability>> {
-    return this.http.get<Page<Availability>>("/locale/app/availabilities");
-  }
-
-  /** GET /locale/app/contacts */
-  listContacts(params?: PageParams): Promise<Page<Contact>> {
-    return this.http.get<Page<Contact>>(
-      "/locale/app/contacts",
+  /** GET /locale/app/v2/events — promotion résolue, ticket gardé en id brut (`ticketOfferId`). */
+  listEvents(params?: PageParams): Promise<PageDTO<EventTileDTO>> {
+    return this.http.get<PageDTO<EventTileDTO>>(
+      `${V2_BASE}/events`,
       pageQuery(params)
     );
   }
 
-  /** GET /locale/app/top-offers */
-  getTopOffers(params?: TopOffersParams): Promise<TopOffers> {
-    return this.http.get<TopOffers>("/locale/app/top-offers", {
+  /** GET /locale/app/v2/events/{id} — promotion ET ticket résolus. */
+  getEvent(id: string): Promise<EventDetailDTO> {
+    return this.http.get<EventDetailDTO>(
+      `${V2_BASE}/events/${encodeURIComponent(id)}`
+    );
+  }
+
+  /** GET /locale/app/top-offers — pas d'équivalent v2, reste sur v1. */
+  getTopOffers(params?: TopOffersParams): Promise<TopOffersDTO> {
+    return this.http.get<TopOffersDTO>(`${V1_BASE}/top-offers`, {
       range: params?.range,
       limit: params?.limit,
     });

@@ -32,7 +32,7 @@ const yodoo = new YodooClient({
 const provider = await yodoo.getProvider();
 const catalogues = await yodoo.listCatalogues();
 const offers = await yodoo.listOffers({ catalogue: catalogues.content[0].id });
-const prices = await yodoo.getOfferPrices(offers.content[0].id);
+const offer = await yodoo.getOffer(offers.content[0].id); // prices inclus, paginés
 ```
 
 **Important — `appSecret` ne doit jamais atteindre le navigateur.** Ce client doit être
@@ -66,24 +66,29 @@ Le client contacte toujours `https://yodoo.space/api` — ce n'est pas configura
 | `appId` | oui | Fourni par le propriétaire du commerce |
 | `appSecret` | oui | Fourni par le propriétaire du commerce, jamais côté navigateur |
 
-### Méthodes (toutes les routes `/locale/app/**`)
+### Méthodes (endpoints `/locale/app/v2/**`, sauf mention contraire)
 
 | Méthode | Route | Retour |
 |---|---|---|
-| `getProvider()` | `GET /locale/app` | `Provider` |
-| `listCatalogues(params?)` | `GET /locale/app/catalogues` | `Page<Catalogue>` |
-| `getCatalogue(id)` | `GET /locale/app/catalogues/{id}` | `Catalogue` |
-| `listCatalogueOffers(catalogueId, params?)` | `GET /locale/app/catalogues/{id}/offers` | `Page<Offer>` |
-| `listOffers(params?)` | `GET /locale/app/offers` | `Page<Offer>` |
-| `getOfferPrices(offerId)` | `GET /locale/app/offers/{id}/prices` | `Page<Price>` |
-| `listPaymentMethods(params?)` | `GET /locale/app/payment-methods` | `Page<PaymentMethod>` |
-| `listAvailabilities()` | `GET /locale/app/availabilities` | `Page<Availability>` |
-| `listContacts(params?)` | `GET /locale/app/contacts` | `Page<Contact>` |
-| `getTopOffers(params?)` | `GET /locale/app/top-offers` | `TopOffers` |
-| `getFileUrl(fileId)` | — | URL publique de streaming d'un fichier (`FileRef.id`) |
+| `getProvider()` | `GET /locale/app/v2` | `ProviderDetailDTO` (fusionne provider + moyens de paiement + contacts + disponibilités) |
+| `listCatalogues(params?)` | `GET /locale/app/v2/catalogues` | `PageDTO<CatalogueTileDTO>` |
+| `getCatalogue(id)` | `GET /locale/app/v2/catalogues/{id}` | `CatalogueDetailDTO` |
+| `listCatalogueOffers(catalogueId, params?)` | `GET /locale/app/v2/catalogues/{id}/offers` | `PageDTO<OfferTileDTO>` |
+| `listOffers(params?)` | `GET /locale/app/v2/offers` | `PageDTO<OfferTileDTO>` |
+| `getOffer(id, params?)` | `GET /locale/app/v2/offers/{id}` | `OfferDetailDTO` (`params` pagine `prices`, pas la liste d'offres) |
+| `listEvents(params?)` | `GET /locale/app/v2/events` | `PageDTO<EventTileDTO>` (promotion résolue, ticket en id brut) |
+| `getEvent(id)` | `GET /locale/app/v2/events/{id}` | `EventDetailDTO` (promotion et ticket résolus) |
+| `getTopOffers(params?)` | `GET /locale/app/top-offers` (v1, pas d'équivalent v2) | `TopOffersDTO` |
+| `getFileUrl(fileId)` | — | URL publique de streaming d'un fichier (`FileDTO.id`) |
 | `invalidateToken()` | — | Force le renouvellement du token au prochain appel |
 
-`params?` accepte `{ page, size, sort }` (taille max serveur : 30).
+`params?` accepte `{ page, size, sort }` (taille max serveur : 30). `listOffers` accepte
+en plus `catalogue` (publicId) pour filtrer par catalogue.
+
+**Changement par rapport à la v1** : `listPaymentMethods()`, `listAvailabilities()`,
+`listContacts()` et `getOfferPrices()` n'existent plus — leurs données sont désormais
+incluses respectivement dans `getProvider()` (les trois premières) et `getOffer(id)`
+(prix, paginés).
 
 ### Gestion des erreurs
 
