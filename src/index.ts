@@ -43,6 +43,7 @@ export type {
   PromotionDiscountType,
   Gender,
   PromotionDTO,
+  CustomerProfileDTO,
   TopOfferItemDTO,
   TopOffersDTO,
   PageDTO,

@@ -4,6 +4,7 @@ import { buildFileUrl } from "./file-url.js";
 import type {
   CatalogueDetailDTO,
   CatalogueTileDTO,
+  CustomerProfileDTO,
   EventDetailDTO,
   EventTileDTO,
   ListOffersParams,
@@ -45,9 +46,10 @@ function pageQuery(params?: PageParams): QueryParams {
 }
 
 /**
- * Client pour l'API Yodoo LocaleApp v2 (ROLE_LOCALE_APP) : lecture seule des
- * données du commerce (catalogues, offres, prix, disponibilités, contacts,
- * moyens de paiement) via un couple appId/appSecret.
+ * Client pour l'API Yodoo LocaleApp v2 (ROLE_LOCALE_APP) : lecture des données
+ * du commerce (catalogues, offres, prix, disponibilités, contacts, moyens de
+ * paiement) via un couple appId/appSecret, plus un seul endpoint d'écriture
+ * (`registerCustomerFromToken`, depuis le 04/08/2026).
  *
  * À utiliser côté serveur uniquement — voir LocaleApp-integration-guide.md §1.4
  * (CORS + appSecret ne doit jamais atteindre le navigateur).
@@ -136,6 +138,20 @@ export class YodooClient {
     return this.http.get<EventDetailDTO>(
       `${V2_BASE}/events/${encodeURIComponent(id)}`
     );
+  }
+
+  /**
+   * POST /locale/app/v2/customers/from-token — échange le jeton de partage court terme
+   * (~5 min) qu'un client a généré côté app cliente contre son enregistrement comme
+   * customer de ce commerce. Seul endpoint d'écriture du client (docs/apis/apps/locale.md
+   * §5, yodoo_back). Le transmettre vaut consentement explicite du client : le backend
+   * bascule `allowPersonalData` à `true` et copie son nom sur le profil. Idempotent : rejouer
+   * le même jeton dans sa fenêtre de validité ré-enregistre/retrouve le même profil.
+   */
+  registerCustomerFromToken(token: string): Promise<CustomerProfileDTO> {
+    return this.http.post<CustomerProfileDTO>(`${V2_BASE}/customers/from-token`, {
+      token,
+    });
   }
 
   /** GET /locale/app/top-offers — pas d'équivalent v2, reste sur v1. */
