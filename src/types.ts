@@ -332,6 +332,23 @@ export interface ListOffersParams extends PageParams {
   catalogue?: string;
 }
 
+/**
+ * Réponse de POST /locale/app/v2/customers/from-token (docs/apis/apps/locale.md §5, yodoo_back).
+ * Forme v1 réutilisée côté backend : `customer` est déclaré mais jamais rempli par
+ * `CustomerProfileMapper`, toujours `null` en pratique aujourd'hui.
+ */
+export interface CustomerProfileDTO {
+  id: string;
+  customerName: string | null;
+  customerPhoneNumber: string | null;
+  customer: null;
+  totalOrders: number;
+  totalSpent: number;
+  currency: string | null;
+  allowNotifications: boolean | null;
+  allowPersonalData: boolean | null;
+}
+
 export interface TopOffersParams {
   /** Fenêtre glissante, ex. "7d" (défaut serveur). */
   range?: string;

@@ -79,6 +79,7 @@ Le client contacte toujours `https://yodoo.space/api` — ce n'est pas configura
 | `listEvents(params?)` | `GET /locale/app/v2/events` | `PageDTO<EventTileDTO>` (promotion résolue, ticket en id brut) |
 | `getEvent(id)` | `GET /locale/app/v2/events/{id}` | `EventDetailDTO` (promotion et ticket résolus) |
 | `getTopOffers(params?)` | `GET /locale/app/top-offers` (v1, pas d'équivalent v2) | `TopOffersDTO` |
+| `registerCustomerFromToken(token)` | `POST /locale/app/v2/customers/from-token` | `CustomerProfileDTO` |
 | `getFileUrl(fileId)` | — | URL publique de streaming d'un fichier (`FileDTO.id`) |
 | `invalidateToken()` | — | Force le renouvellement du token au prochain appel |
 
@@ -123,8 +124,9 @@ try {
   10 req/min par IP, ne jamais l'appeler à chaque requête.
 - Un site tiers appelant l'API directement depuis le navigateur sera bloqué par CORS sauf
   si son origine est whitelistée côté backend — faire les appels depuis le serveur.
-- Toutes les routes exposées sont en lecture seule : il n'y a aucun endpoint d'écriture
-  (pas de création de commande) pour ce rôle d'app.
+- Presque toutes les routes exposées sont en lecture seule (pas de création de commande pour ce
+  rôle d'app) ; `registerCustomerFromToken` est la seule exception depuis le 04/08/2026 — voir
+  `docs/apis/apps/locale.md` §5 côté `yodoo_back`.
 
 ## Développement
 

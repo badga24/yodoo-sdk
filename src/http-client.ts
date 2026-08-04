@@ -19,22 +19,45 @@ export class HttpClient {
 
   async get<T>(path: string, query?: QueryParams): Promise<T> {
     const url = this.buildUrl(path, query);
-    const response = await this.fetchWithToken(url);
+    const response = await this.fetchWithToken(url, "GET");
 
     // Le token peut avoir expiré côté serveur alors que le cache local le
     // croyait encore valide — on retente une fois avec un token frais.
     if (response.status === 401) {
       this.tokenProvider.invalidate();
-      return this.parse<T>(await this.fetchWithToken(url));
+      return this.parse<T>(await this.fetchWithToken(url, "GET"));
     }
 
     return this.parse<T>(response);
   }
 
-  private async fetchWithToken(url: string): Promise<Response> {
+  async post<T>(path: string, body: unknown): Promise<T> {
+    const url = this.buildUrl(path);
+    const response = await this.fetchWithToken(url, "POST", body);
+
+    // Même retry-sur-401 que get() : le token en cache peut avoir expiré
+    // côté serveur entre-temps.
+    if (response.status === 401) {
+      this.tokenProvider.invalidate();
+      return this.parse<T>(await this.fetchWithToken(url, "POST", body));
+    }
+
+    return this.parse<T>(response);
+  }
+
+  private async fetchWithToken(
+    url: string,
+    method: "GET" | "POST",
+    body?: unknown
+  ): Promise<Response> {
     const token = await this.tokenProvider.getToken();
     return fetch(url, {
-      headers: { Authorization: `Bearer ${token}` },
+      method,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
     });
   }
 
