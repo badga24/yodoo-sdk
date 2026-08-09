@@ -33,6 +33,8 @@ export type {
   OfferStatus,
   OfferTileDTO,
   OfferDetailDTO,
+  OfferGroupDTO,
+  OfferGroupOfferDTO,
   CatalogueTileDTO,
   CatalogueDetailDTO,
   EventRecurrence,

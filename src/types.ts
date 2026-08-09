@@ -330,6 +330,26 @@ export interface PageParams {
 export interface ListOffersParams extends PageParams {
   /** publicId d'un catalogue, pour filtrer les offres (query param conservé mais non documenté dans docs/sdk/locale-app-v2.md). */
   catalogue?: string;
+  /** publicId d'un OfferGroup (voir `listOfferGroups()`), pour filtrer les offres — indépendant de `catalogue` et cumulable avec lui. */
+  group?: string;
+}
+
+/** Groupement interne d'offres, non visible côté client (ex. "Ingrédients", "Livraison") — GET /locale/app/v2/offer-groups. */
+export interface OfferGroupDTO {
+  id: string;
+  name: string;
+  description: string;
+  code: string;
+  userCreated: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Forme "ligne de liste" d'une offre au sein d'un groupe — GET /locale/app/v2/offer-groups/{id}/offers. */
+export interface OfferGroupOfferDTO {
+  id: string;
+  name: string;
+  status: OfferStatus;
 }
 
 /**

@@ -9,6 +9,8 @@ import type {
   EventTileDTO,
   ListOffersParams,
   OfferDetailDTO,
+  OfferGroupDTO,
+  OfferGroupOfferDTO,
   OfferTileDTO,
   PageDTO,
   PageParams,
@@ -105,12 +107,29 @@ export class YodooClient {
     );
   }
 
-  /** GET /locale/app/v2/offers */
+  /** GET /locale/app/v2/offers — `catalogue` et `group` sont indépendants et cumulables. */
   listOffers(params?: ListOffersParams): Promise<PageDTO<OfferTileDTO>> {
     return this.http.get<PageDTO<OfferTileDTO>>(`${V2_BASE}/offers`, {
       ...pageQuery(params),
       catalogue: params?.catalogue,
+      group: params?.group,
     });
+  }
+
+  /** GET /locale/app/v2/offer-groups — groupements internes d'offres du commerce (non visibles côté client), pour découvrir les ids à passer à `listOffers({ group })`. */
+  listOfferGroups(): Promise<OfferGroupDTO[]> {
+    return this.http.get<OfferGroupDTO[]>(`${V2_BASE}/offer-groups`);
+  }
+
+  /** GET /locale/app/v2/offer-groups/{id}/offers */
+  listOfferGroupOffers(
+    groupId: string,
+    params?: PageParams
+  ): Promise<PageDTO<OfferGroupOfferDTO>> {
+    return this.http.get<PageDTO<OfferGroupOfferDTO>>(
+      `${V2_BASE}/offer-groups/${encodeURIComponent(groupId)}/offers`,
+      pageQuery(params)
+    );
   }
 
   /**

@@ -76,6 +76,8 @@ Le client contacte toujours `https://yodoo.space/api` — ce n'est pas configura
 | `listCatalogueOffers(catalogueId, params?)` | `GET /locale/app/v2/catalogues/{id}/offers` | `PageDTO<OfferTileDTO>` |
 | `listOffers(params?)` | `GET /locale/app/v2/offers` | `PageDTO<OfferTileDTO>` |
 | `getOffer(id, params?)` | `GET /locale/app/v2/offers/{id}` | `OfferDetailDTO` (`params` pagine `prices`, pas la liste d'offres) |
+| `listOfferGroups()` | `GET /locale/app/v2/offer-groups` | `OfferGroupDTO[]` (groupements internes, non visibles côté client) |
+| `listOfferGroupOffers(groupId, params?)` | `GET /locale/app/v2/offer-groups/{id}/offers` | `PageDTO<OfferGroupOfferDTO>` |
 | `listEvents(params?)` | `GET /locale/app/v2/events` | `PageDTO<EventTileDTO>` (promotion résolue, ticket en id brut) |
 | `getEvent(id)` | `GET /locale/app/v2/events/{id}` | `EventDetailDTO` (promotion et ticket résolus) |
 | `getTopOffers(params?)` | `GET /locale/app/top-offers` (v1, pas d'équivalent v2) | `TopOffersDTO` |
@@ -84,7 +86,8 @@ Le client contacte toujours `https://yodoo.space/api` — ce n'est pas configura
 | `invalidateToken()` | — | Force le renouvellement du token au prochain appel |
 
 `params?` accepte `{ page, size, sort }` (taille max serveur : 30). `listOffers` accepte
-en plus `catalogue` (publicId) pour filtrer par catalogue.
+en plus `catalogue` (publicId d'un catalogue) et `group` (publicId d'un `OfferGroup`, voir
+`listOfferGroups()`) pour filtrer — indépendants et cumulables.
 
 **Changement par rapport à la v1** : `listPaymentMethods()`, `listAvailabilities()`,
 `listContacts()` et `getOfferPrices()` n'existent plus — leurs données sont désormais
