@@ -79,17 +79,36 @@ Le client contacte toujours `https://yodoo.space/api` — ce n'est pas configura
 | `listEvents(params?)` | `GET /locale/app/v2/events` | `PageDTO<EventTileDTO>` (promotion résolue, ticket en id brut) |
 | `getEvent(id)` | `GET /locale/app/v2/events/{id}` | `EventDetailDTO` (promotion et ticket résolus) |
 | `getTopOffers(params?)` | `GET /locale/app/top-offers` (v1, pas d'équivalent v2) | `TopOffersDTO` |
+| `getContent(ifModifiedSince?)` | `GET /locale/app/v2/content` | `ContentResult` (clé → HTML ; throttlé à 1 payload réel/heure/app, voir plus bas) |
 | `registerCustomerFromToken(token)` | `POST /locale/app/v2/customers/from-token` | `CustomerProfileDTO` |
 | `getFileUrl(fileId)` | — | URL publique de streaming d'un fichier (`FileDTO.id`) |
 | `invalidateToken()` | — | Force le renouvellement du token au prochain appel |
+| `invalidateCache()` | — | Vide le cache en mémoire des réponses de lecture (voir plus bas) |
 
 `params?` accepte `{ page, size, sort }` (taille max serveur : 30). `listOffers` accepte
-en plus `catalogue` (publicId) pour filtrer par catalogue.
+en plus `catalogue` (publicId d'un catalogue) et `group` (publicId d'un `OfferGroup`) pour
+filtrer — indépendants et cumulables. `OfferGroup` n'est plus autrement exposé par cette
+API (les endpoints de découverte ont été retirés côté backend) : aucun moyen d'obtenir un
+id valide via ce client, il faut le tenir d'ailleurs.
 
 **Changement par rapport à la v1** : `listPaymentMethods()`, `listAvailabilities()`,
 `listContacts()` et `getOfferPrices()` n'existent plus — leurs données sont désormais
 incluses respectivement dans `getProvider()` (les trois premières) et `getOffer(id)`
 (prix, paginés).
+
+**`getContent`** : throttlé à 1 payload réel/heure/app (429 au-delà). Conserver le
+`lastModified` reçu et le repasser en `ifModifiedSince` au prochain appel permet de sonder
+gratuitement les changements — un 304 renvoie `{ content: null, lastModified }` et ne
+consomme pas le quota horaire.
+
+**Cache en mémoire** : toutes les méthodes de lecture passant par un `GET` simple
+(`getProvider`, `listCatalogues`, `getCatalogue`, `listCatalogueOffers`, `listOffers`,
+`getOffer`, `listEvents`, `getEvent`, `getTopOffers`) sont mises en cache côté client, en
+mémoire, pour la durée du process — clé = URL complète (query incluse), TTL fixe **1h**, non
+configurable. `getContent()` n'est pas concerné (son propre mécanisme `ifModifiedSince` fait
+déjà ce rôle). `invalidateCache()` vide tout le cache d'un coup (pas d'invalidation
+granulaire par clé) ; à appeler quand on sait qu'une donnée a changé côté commerce et qu'on
+ne veut pas attendre l'expiration du TTL.
 
 ### Gestion des erreurs
 
@@ -122,6 +141,9 @@ try {
 - Le token d'app (JWT) est mis en cache en mémoire pour la durée de vie du process et
   renouvelé automatiquement sur expiration ou 401 — l'endpoint d'auth est limité à
   10 req/min par IP, ne jamais l'appeler à chaque requête.
+- Les réponses des méthodes de lecture sont elles aussi mises en cache en mémoire (TTL fixe
+  1h, voir `invalidateCache()`) — deux appels identiques à `listOffers()` dans l'heure ne font
+  qu'une requête HTTP.
 - Un site tiers appelant l'API directement depuis le navigateur sera bloqué par CORS sauf
   si son origine est whitelistée côté backend — faire les appels depuis le serveur.
 - Presque toutes les routes exposées sont en lecture seule (pas de création de commande pour ce

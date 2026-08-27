@@ -7,6 +7,7 @@ import type {
   CustomerProfileDTO,
   EventDetailDTO,
   EventTileDTO,
+  ContentResult,
   ListOffersParams,
   OfferDetailDTO,
   OfferTileDTO,
@@ -73,7 +74,7 @@ export class YodooClient {
   /**
    * GET /locale/app/v2 — détails du commerce, avec moyens de paiement,
    * contacts et disponibilités inclus (remplace 4 appels v1 en un seul).
-   * Non caché côté serveur : toujours à jour.
+   * Mis en cache ici côté client (TTL 1h, voir `invalidateCache()`).
    */
   getProvider(): Promise<ProviderDetailDTO> {
     return this.http.get<ProviderDetailDTO>(V2_BASE);
@@ -105,11 +106,12 @@ export class YodooClient {
     );
   }
 
-  /** GET /locale/app/v2/offers */
+  /** GET /locale/app/v2/offers — `catalogue` et `group` sont indépendants et cumulables. */
   listOffers(params?: ListOffersParams): Promise<PageDTO<OfferTileDTO>> {
     return this.http.get<PageDTO<OfferTileDTO>>(`${V2_BASE}/offers`, {
       ...pageQuery(params),
       catalogue: params?.catalogue,
+      group: params?.group,
     });
   }
 
@@ -154,6 +156,18 @@ export class YodooClient {
     });
   }
 
+  /**
+   * GET /locale/app/v2/content — contenu HTML du site vitrine du commerce (clé → HTML).
+   * Throttlé à 1 payload réel/heure/app (429 au-delà). Passer `ifModifiedSince` (la valeur
+   * `lastModified` reçue au précédent appel) pour un polling gratuit : un 304 renvoie
+   * `content: null` et ne consomme pas le quota horaire.
+   */
+  getContent(ifModifiedSince?: string): Promise<ContentResult> {
+    return this.http
+      .getConditional<Record<string, string>>(`${V2_BASE}/content`, ifModifiedSince)
+      .then(({ value, lastModified }) => ({ content: value, lastModified }));
+  }
+
   /** GET /locale/app/top-offers — pas d'équivalent v2, reste sur v1. */
   getTopOffers(params?: TopOffersParams): Promise<TopOffersDTO> {
     return this.http.get<TopOffersDTO>(`${V1_BASE}/top-offers`, {
@@ -173,5 +187,14 @@ export class YodooClient {
   /** Force le renouvellement du token au prochain appel (ex. après une révocation manuelle). */
   invalidateToken(): void {
     this.tokenProvider.invalidate();
+  }
+
+  /**
+   * Vide le cache en mémoire des réponses de lecture (`getProvider`, `listCatalogues`,
+   * `listOffers`, etc. — TTL fixe 1h). À appeler quand on sait qu'une donnée a changé côté
+   * commerce et qu'on ne veut pas attendre l'expiration du TTL.
+   */
+  invalidateCache(): void {
+    this.http.invalidateCache();
   }
 }

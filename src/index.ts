@@ -44,6 +44,7 @@ export type {
   Gender,
   PromotionDTO,
   CustomerProfileDTO,
+  ContentResult,
   TopOfferItemDTO,
   TopOffersDTO,
   PageDTO,

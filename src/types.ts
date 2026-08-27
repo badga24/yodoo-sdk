@@ -330,6 +330,13 @@ export interface PageParams {
 export interface ListOffersParams extends PageParams {
   /** publicId d'un catalogue, pour filtrer les offres (query param conservé mais non documenté dans docs/sdk/locale-app-v2.md). */
   catalogue?: string;
+  /**
+   * publicId d'un `OfferGroup`, pour filtrer les offres — indépendant de `catalogue` et
+   * cumulable avec lui. `OfferGroup` n'est plus exposé par cette API (les endpoints de
+   * découverte ont été retirés) : aucun moyen d'obtenir un id valide via ce client, il faut
+   * le tenir d'ailleurs.
+   */
+  group?: string;
 }
 
 /**
@@ -347,6 +354,19 @@ export interface CustomerProfileDTO {
   currency: string | null;
   allowNotifications: boolean | null;
   allowPersonalData: boolean | null;
+}
+
+/**
+ * Résultat de GET /locale/app/v2/content (docs/apis/apps/locale.md §6, yodoo_back) — contenu HTML
+ * du site vitrine du commerce, par clé.
+ *
+ * `content` vaut `null` sur un 304 (Not Modified) : passer `lastModified` reçu au précédent appel
+ * en `ifModifiedSince` à `getContent()` permet de vérifier gratuitement s'il y a du nouveau — un
+ * 304 ne consomme pas le quota horaire (1 payload réel/heure/app, 429 au-delà).
+ */
+export interface ContentResult {
+  content: Record<string, string> | null;
+  lastModified: string | null;
 }
 
 export interface TopOffersParams {
