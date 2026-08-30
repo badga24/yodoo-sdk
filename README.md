@@ -65,6 +65,7 @@ Le client contacte toujours `https://yodoo.space/api` — ce n'est pas configura
 |---|---|---|
 | `appId` | oui | Fourni par le propriétaire du commerce |
 | `appSecret` | oui | Fourni par le propriétaire du commerce, jamais côté navigateur |
+| `fileCacheMaxBytes` | non | Taille max (octets) du cache en mémoire de `getFile()`. `0` désactive la mise en cache. Défaut : 50 Mo |
 
 ### Méthodes (endpoints `/locale/app/v2/**`, sauf mention contraire)
 
@@ -82,6 +83,7 @@ Le client contacte toujours `https://yodoo.space/api` — ce n'est pas configura
 | `getContent(ifModifiedSince?)` | `GET /locale/app/v2/content` | `ContentResult` (clé → HTML ; throttlé à 1 payload réel/heure/app, voir plus bas) |
 | `registerCustomerFromToken(token)` | `POST /locale/app/v2/customers/from-token` | `CustomerProfileDTO` |
 | `getFileUrl(fileId)` | — | URL publique de streaming d'un fichier (`FileDTO.id`) |
+| `getFile(fileId)` | — | `{ bytes, contentType, cacheControl }` — télécharge le fichier, mis en cache en mémoire (voir plus bas) |
 | `invalidateToken()` | — | Force le renouvellement du token au prochain appel |
 | `invalidateCache()` | — | Vide le cache en mémoire des réponses de lecture (voir plus bas) |
 
@@ -111,6 +113,16 @@ configurable. `getContent()` n'est pas concerné (son propre mécanisme `ifModif
 déjà ce rôle). `invalidateCache()` vide tout le cache d'un coup (pas d'invalidation
 granulaire par clé) ; à appeler quand on sait qu'une donnée a changé côté commerce et qu'on
 ne veut pas attendre l'expiration du TTL.
+
+**`getFile(fileId)`** a son propre cache en mémoire, séparé, borné en **octets** (pas en
+TTL) via `fileCacheMaxBytes` (défaut 50 Mo) : les entrées les plus anciennes sont évincées
+(LRU) pour faire de la place, et une entrée qui dépasse le budget à elle seule est
+simplement ignorée (jamais d'erreur) — `fileCacheMaxBytes: 0` désactive donc la mise en
+cache. Pas de TTL nécessaire, `fileId` étant un identifiant immuable côté backend. Le champ
+`cacheControl` renvoyé est la valeur telle quelle envoyée par Yodoo (`immutable`, 365 jours)
+— à retransmettre sur la réponse HTTP finale si ce fichier est reproxifié vers un
+navigateur ; le cache en mémoire de `getFile()` ne fait pas ce travail à ta place, il évite
+seulement de rappeler Yodoo depuis ce process.
 
 ### Gestion des erreurs
 

@@ -12,6 +12,7 @@ export {
 
 export { formatMoney } from "./money.js";
 export { buildFileUrl } from "./file-url.js";
+export type { CachedFile } from "./file-cache.js";
 
 export type {
   GeoLocation,

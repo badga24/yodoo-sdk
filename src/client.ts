@@ -1,6 +1,8 @@
 import { HttpClient, type QueryParams } from "./http-client.js";
 import { TokenProvider } from "./token-provider.js";
 import { buildFileUrl } from "./file-url.js";
+import { BoundedFileCache, type CachedFile } from "./file-cache.js";
+import { toDomainError } from "./errors.js";
 import type {
   CatalogueDetailDTO,
   CatalogueTileDTO,
@@ -24,6 +26,9 @@ const MAX_PAGE_SIZE = 30;
 /** Seul backend Yodoo pris en charge — non configurable. */
 const API_BASE_URL = "https://yodoo.space/api";
 
+/** Taille par défaut du cache en mémoire de `getFile()` — voir `YodooClientOptions.fileCacheMaxBytes`. */
+const DEFAULT_FILE_CACHE_MAX_BYTES = 50 * 1024 * 1024;
+
 /** GET /locale/app/top-offers n'a pas d'équivalent v2 (docs/sdk/locale-app-v2.md §1) — reste sur v1. */
 const V1_BASE = "/locale/app";
 const V2_BASE = "/locale/app/v2";
@@ -33,6 +38,13 @@ export interface YodooClientOptions {
   appId: string;
   /** Secret de l'app — ne jamais l'exposer côté navigateur (guide §1.4). */
   appSecret: string;
+  /**
+   * Taille max (en octets) du cache en mémoire de `getFile()`. Une entrée qui dépasse ce
+   * budget à elle seule n'est pas mise en cache (pas d'erreur) ; les entrées les plus
+   * anciennes sont évincées pour faire de la place aux nouvelles. `0` désactive la mise
+   * en cache. Défaut : 50 Mo.
+   */
+  fileCacheMaxBytes?: number;
 }
 
 function pageQuery(params?: PageParams): QueryParams {
@@ -58,6 +70,7 @@ function pageQuery(params?: PageParams): QueryParams {
 export class YodooClient {
   private readonly http: HttpClient;
   private readonly tokenProvider: TokenProvider;
+  private readonly fileCache: BoundedFileCache;
 
   constructor(options: YodooClientOptions) {
     this.tokenProvider = new TokenProvider({
@@ -69,6 +82,9 @@ export class YodooClient {
       baseUrl: API_BASE_URL,
       tokenProvider: this.tokenProvider,
     });
+    this.fileCache = new BoundedFileCache(
+      options.fileCacheMaxBytes ?? DEFAULT_FILE_CACHE_MAX_BYTES
+    );
   }
 
   /**
@@ -186,6 +202,33 @@ export class YodooClient {
    */
   getFileUrl(fileId: string): string {
     return buildFileUrl(API_BASE_URL, fileId);
+  }
+
+  /**
+   * Télécharge un fichier public (image, etc.) depuis `getFileUrl`, avec un cache en
+   * mémoire borné en octets (voir `fileCacheMaxBytes`) : les appels suivants pour le même
+   * `fileId` ne retapent pas Yodoo tant que l'entrée n'a pas été évincée. `fileId` étant un
+   * identifiant immuable côté backend, aucun TTL n'est nécessaire. `cacheControl` est la
+   * valeur renvoyée par Yodoo (guide §3, `immutable` 365j) — à retransmettre telle quelle
+   * si ce fichier est reproxifié vers un navigateur.
+   */
+  async getFile(fileId: string): Promise<CachedFile> {
+    const cached = this.fileCache.get(fileId);
+    if (cached) return cached;
+
+    const response = await fetch(this.getFileUrl(fileId));
+    if (!response.ok) {
+      throw await toDomainError(response);
+    }
+
+    const entry: CachedFile = {
+      bytes: new Uint8Array(await response.arrayBuffer()),
+      contentType:
+        response.headers.get("Content-Type") ?? "application/octet-stream",
+      cacheControl: response.headers.get("Cache-Control"),
+    };
+    this.fileCache.set(fileId, entry);
+    return entry;
   }
 
   /** Force le renouvellement du token au prochain appel (ex. après une révocation manuelle). */
