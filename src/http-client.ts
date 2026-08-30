@@ -6,7 +6,10 @@ export interface HttpClientOptions {
   tokenProvider: TokenProvider;
 }
 
-export type QueryParams = Record<string, string | number | undefined>;
+export type QueryParams = Record<
+  string,
+  string | number | string[] | number[] | undefined
+>;
 
 /** TTL fixe du cache en mémoire des réponses `get()` — pas configurable. */
 const CACHE_TTL_MS = 60 * 60 * 1000;
@@ -130,7 +133,15 @@ export class HttpClient {
     const url = new URL(`${this.baseUrl}${path}`);
     if (query) {
       for (const [key, value] of Object.entries(query)) {
-        if (value !== undefined) {
+        if (value === undefined) continue;
+        // Un tableau est répété dans la query string (`?key=A&key=B`), pas
+        // sérialisé en une seule valeur — c'est la forme attendue côté backend
+        // (ex. `catalogue`, voir ListOffersParams).
+        if (Array.isArray(value)) {
+          for (const item of value) {
+            url.searchParams.append(key, String(item));
+          }
+        } else {
           url.searchParams.set(key, String(value));
         }
       }

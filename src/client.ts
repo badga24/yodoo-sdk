@@ -106,7 +106,11 @@ export class YodooClient {
     );
   }
 
-  /** GET /locale/app/v2/offers — `catalogue` et `group` sont indépendants et cumulables. */
+  /**
+   * GET /locale/app/v2/offers — `catalogue` et `group` sont indépendants et cumulables.
+   * `catalogue` accepte un ou plusieurs publicId (union match) ; un publicId inconnu ou
+   * n'appartenant pas au commerce fait échouer l'appel en 404.
+   */
   listOffers(params?: ListOffersParams): Promise<PageDTO<OfferTileDTO>> {
     return this.http.get<PageDTO<OfferTileDTO>>(`${V2_BASE}/offers`, {
       ...pageQuery(params),

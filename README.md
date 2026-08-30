@@ -86,10 +86,12 @@ Le client contacte toujours `https://yodoo.space/api` — ce n'est pas configura
 | `invalidateCache()` | — | Vide le cache en mémoire des réponses de lecture (voir plus bas) |
 
 `params?` accepte `{ page, size, sort }` (taille max serveur : 30). `listOffers` accepte
-en plus `catalogue` (publicId d'un catalogue) et `group` (publicId d'un `OfferGroup`) pour
-filtrer — indépendants et cumulables. `OfferGroup` n'est plus autrement exposé par cette
-API (les endpoints de découverte ont été retirés côté backend) : aucun moyen d'obtenir un
-id valide via ce client, il faut le tenir d'ailleurs.
+en plus `catalogue` (publicId d'un catalogue, ou un tableau de plusieurs pour un match sur
+l'union) et `group` (publicId d'un `OfferGroup`) pour filtrer — indépendants et cumulables.
+Un publicId de catalogue inconnu ou n'appartenant pas au commerce fait échouer l'appel en
+404. `OfferGroup` n'est plus autrement exposé par cette API (les endpoints de découverte
+ont été retirés côté backend) : aucun moyen d'obtenir un id valide via ce client, il faut
+le tenir d'ailleurs.
 
 **Changement par rapport à la v1** : `listPaymentMethods()`, `listAvailabilities()`,
 `listContacts()` et `getOfferPrices()` n'existent plus — leurs données sont désormais

@@ -77,6 +77,13 @@ export interface PaymentMethodDTO {
   default: boolean;
   inactive: boolean;
   createdAt: string;
+  /**
+   * Solde suivi de ce moyen de paiement (typiquement le compte `CASH` du commerce ou son
+   * `FEDAPAY_HOLDING`), `null` si non suivi. ⚠️ Donnée financière normalement réservée au
+   * propriétaire : cet endpoint la partage avec l'app tierce sans vue allégée (depuis le
+   * 15/08/2026, voir docs/apis/apps/locale.md §1 dans yodoo_back).
+   */
+  walletBalance: string | null;
 }
 
 export interface ProviderWebsiteDTO {
@@ -328,8 +335,14 @@ export interface PageParams {
 }
 
 export interface ListOffersParams extends PageParams {
-  /** publicId d'un catalogue, pour filtrer les offres (query param conservé mais non documenté dans docs/sdk/locale-app-v2.md). */
-  catalogue?: string;
+  /**
+   * publicId d'un catalogue (ou plusieurs, pour un match sur l'union), pour filtrer les
+   * offres. *(Depuis le 30/08/2026.)* Un tableau est accepté en plus d'une valeur unique —
+   * le paramètre est répété dans la query string (`?catalogue=A&catalogue=B`). Si un
+   * `publicId` fourni n'existe pas ou n'appartient pas au commerce authentifié, l'appel
+   * échoue en `404` (au lieu d'une page vide).
+   */
+  catalogue?: string | string[];
   /**
    * publicId d'un `OfferGroup`, pour filtrer les offres — indépendant de `catalogue` et
    * cumulable avec lui. `OfferGroup` n'est plus exposé par cette API (les endpoints de
