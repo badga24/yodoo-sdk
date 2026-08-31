@@ -82,6 +82,8 @@ Le client contacte toujours `https://api.yodoo.space` — ce n'est pas configura
 | `getTopOffers(params?)` | `GET /locale/app/top-offers` (v1, pas d'équivalent v2) | `TopOffersDTO` |
 | `getContent(ifModifiedSince?)` | `GET /locale/app/v2/content` | `ContentResult` (clé → HTML ; throttlé à 1 payload réel/heure/app, voir plus bas) |
 | `registerCustomerFromToken(token)` | `POST /locale/app/v2/customers/from-token` | `CustomerProfileDTO` |
+| `createOrder(items, offlineAuthorizationCode, note?)` | `POST /locale/app/v2/orders` | `OrderDTO` (vente comptoir, articles nés `CLOSED`) |
+| `payOrderByMobileMoney(orderId, params)` | `POST /locale/app/v2/orders/{order}/pay/mobile-money` | `InvoiceDTO` |
 | `getFileUrl(fileId)` | — | URL publique de streaming d'un fichier (`FileDTO.id`) |
 | `getFile(fileId)` | — | `{ bytes, contentType, cacheControl }` — télécharge le fichier, mis en cache en mémoire (voir plus bas) |
 | `invalidateToken()` | — | Force le renouvellement du token au prochain appel |
@@ -160,9 +162,14 @@ try {
   qu'une requête HTTP.
 - Un site tiers appelant l'API directement depuis le navigateur sera bloqué par CORS sauf
   si son origine est whitelistée côté backend — faire les appels depuis le serveur.
-- Presque toutes les routes exposées sont en lecture seule (pas de création de commande pour ce
-  rôle d'app) ; `registerCustomerFromToken` est la seule exception depuis le 04/08/2026 — voir
-  `docs/apis/apps/locale.md` §5 côté `yodoo_back`.
+- La plupart des routes exposées sont en lecture seule. Les exceptions : `registerCustomerFromToken`
+  (depuis le 04/08/2026) et, depuis le 31/08/2026, `createOrder`/`payOrderByMobileMoney` — voir
+  `docs/apis/apps/locale.md` §5 et §7 côté `yodoo_back`.
+- `createOrder` et `payOrderByMobileMoney` agissent au nom d'un client précis, identifié par un
+  `offlineAuthorizationCode` (code hors-ligne signé, généré côté app cliente — hors-scope de ce
+  SDK). Une app tierce n'ayant qu'un credential d'intégration, ce code est obligatoire sur les
+  deux appels : `LocaleAppV2ControllerImpl` rejette (403) toute requête qui l'omet avant même de
+  construire la commande ou d'initier le paiement.
 
 ## Développement
 

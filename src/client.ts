@@ -6,15 +6,19 @@ import { toDomainError } from "./errors.js";
 import type {
   CatalogueDetailDTO,
   CatalogueTileDTO,
+  CreateOrderItemDTO,
   CustomerProfileDTO,
   EventDetailDTO,
   EventTileDTO,
   ContentResult,
+  InvoiceDTO,
   ListOffersParams,
   OfferDetailDTO,
   OfferTileDTO,
+  OrderDTO,
   PageDTO,
   PageParams,
+  PayOrderByMobileMoneyParams,
   ProviderDetailDTO,
   TopOffersDTO,
   TopOffersParams,
@@ -174,6 +178,45 @@ export class YodooClient {
     return this.http.post<CustomerProfileDTO>(`${V2_BASE}/customers/from-token`, {
       token,
     });
+  }
+
+  /**
+   * POST /locale/app/v2/orders — crée une commande "vente comptoir" au nom du client identifié
+   * par `offlineAuthorizationCode` (code hors-ligne signé, généré côté app cliente — voir
+   * docs/apis/apps/locale.md §7, yodoo_back). `finalPrice` est requis sur chaque ligne de
+   * `items` : c'est le commerce qui fixe le prix, pas le client qui choisit parmi des prix
+   * publiés. Les articles naissent `CLOSED` (stock et revenu comptabilisés immédiatement).
+   * Le `publicId` de la commande est imposé par le code : un code donné ne peut créer qu'une
+   * seule commande (rejeu → 409).
+   */
+  createOrder(
+    items: CreateOrderItemDTO[],
+    offlineAuthorizationCode: string,
+    note?: string
+  ): Promise<OrderDTO> {
+    return this.http.post<OrderDTO>(`${V2_BASE}/orders`, {
+      items,
+      offlineAuthorizationCode,
+      note,
+    });
+  }
+
+  /**
+   * POST /locale/app/v2/orders/{order}/pay/mobile-money — paie une commande de ce commerce par
+   * mobile money (docs/apis/apps/locale.md §7, yodoo_back). Le moyen de paiement source est
+   * trouvé ou créé automatiquement à partir de `phoneNumber`/`providerCode`/`countryCode` ; le
+   * client n'a pas besoin de l'avoir pré-enregistré. Règlement asynchrone via webhook.
+   * `idempotencyKey` est obligatoire depuis le 30/08/2026 : un retry réseau avec la même clé
+   * rejoue le résultat déjà obtenu au lieu de déclencher un second transfert.
+   */
+  payOrderByMobileMoney(
+    orderId: string,
+    params: PayOrderByMobileMoneyParams
+  ): Promise<InvoiceDTO> {
+    return this.http.post<InvoiceDTO>(
+      `${V2_BASE}/orders/${encodeURIComponent(orderId)}/pay/mobile-money`,
+      params
+    );
   }
 
   /**

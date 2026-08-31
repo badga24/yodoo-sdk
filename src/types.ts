@@ -388,3 +388,218 @@ export interface TopOffersParams {
   /** Défaut serveur : 4. */
   limit?: number;
 }
+
+// --- Commandes (POST /locale/app/v2/orders, .../pay/mobile-money — docs/apis/apps/locale.md §7, yodoo_back) ---
+
+export interface CreateOrderItemPriceSettingDTO {
+  setting: string;
+  response: string;
+}
+
+/** Requête — une ligne de prix pour un article de `createOrder()`. */
+export interface CreateOrderItemPriceDTO {
+  price: string;
+  /** Chaîne de chiffres (montant en plus petite unité de devise) — requis sur cet endpoint. */
+  finalPrice: string;
+  quantity: number;
+  responses?: CreateOrderItemPriceSettingDTO[];
+}
+
+/** Requête — un article de `createOrder()`. */
+export interface CreateOrderItemDTO {
+  offer: string;
+  prices: CreateOrderItemPriceDTO[];
+}
+
+export type MobileMoneyProviderCode = "MTN" | "MOOV" | "CELTIS";
+
+export type MobileMoneyCountryCode =
+  | "BJ"
+  | "CI"
+  | "SN"
+  | "TG"
+  | "BF"
+  | "ML"
+  | "NE"
+  | "GW"
+  | "NG"
+  | "GH";
+
+export interface PayOrderByMobileMoneyParams {
+  phoneNumber: string;
+  providerCode: MobileMoneyProviderCode;
+  countryCode: MobileMoneyCountryCode;
+  /**
+   * Identifie le client au nom de qui payer (code hors-ligne signé, généré côté app cliente —
+   * voir docs/apis/customer/business.md §8 dans yodoo_back pour le détail de génération). Pas
+   * `@NotNull` au niveau du DTO backend, mais `LocaleAppV2ControllerImpl` rejette explicitement
+   * (403) toute app tierce qui l'omet avant même de tenter le paiement — donc obligatoire en
+   * pratique pour ce client.
+   */
+  offlineAuthorizationCode: string;
+  /**
+   * Généré une fois par tentative de paiement, réutilisé tel quel sur tout retry de cette même
+   * tentative : une clé déjà vue rejoue le résultat déjà obtenu au lieu de retraiter. La
+   * réutiliser pour une commande différente échoue en 409.
+   */
+  idempotencyKey: string;
+}
+
+export interface OrderItemSettingAnswerDTO {
+  id: string;
+  setting: string;
+  /** `null` si le `PriceOrderSetting` ciblé a depuis été supprimé. */
+  type: string | null;
+  content: string;
+  response: string;
+}
+
+/** Réponse — une ligne de prix, imbriquée dans `OrderItemDTO.prices`. */
+export interface OrderItemPriceDTO {
+  id: string;
+  price: PriceDTO;
+  finalPrice: number | null;
+  currencyType: string;
+  quantity: number;
+  responses: OrderItemSettingAnswerDTO[];
+  /** publicIds des Promotion(s) indiquées par le commerce comme ayant motivé `finalPrice`. */
+  promotionIds: string[];
+  /** publicId de l'unité de stock vendue par cette ligne, `null` si aucune liée. */
+  stockUnitId: string | null;
+  /** Code QR/barcode de l'unité de stock vendue par cette ligne, `null` si aucune liée. */
+  stockUnitCode: string | null;
+}
+
+export interface DevProfileSessionMetadataDTO {
+  loginTimestamp: string;
+  accessTokenDurationSeconds: number;
+  accessTokenExpiresAt: string;
+  refreshTokenDurationSeconds: number | null;
+  refreshTokenExpiresAt: string;
+}
+
+/** `refreshToken`/`accessToken` ne sont jamais sérialisés par le backend (WRITE_ONLY côté Jackson). */
+export interface DevProfileDTO {
+  id: string;
+  createdAt: string;
+  sessionMetadata?: DevProfileSessionMetadataDTO;
+}
+
+export interface ViewPreferenceDTO {
+  id: string;
+  primaryColor: string;
+  secondaryColor: string;
+  preferredTemplate: string;
+}
+
+/**
+ * Forme complète v1 du commerce, imbriquée dans `OrderOfferDTO.provider` — plus large que
+ * `ProviderDetailDTO` (v2) : rating à plat au lieu de `RatingSummaryDTO`, plus `preference` et
+ * `developer`.
+ */
+export interface OrderProviderDTO {
+  id: string;
+  name: string;
+  location: GeoLocation;
+  directions: string;
+  identifier: string;
+  utcOffset: string;
+  totalRating: number;
+  ratingCount: number;
+  customerCount: number;
+  availabilities: AvailabilityDTO[];
+  createdAt: string;
+  updatedAt: string;
+  filesSizeInBytes: number | null;
+  images: FileDTO[];
+  contacts: ContactDTO[];
+  preference: ViewPreferenceDTO;
+  website: ProviderWebsiteDTO | null;
+  developer: DevProfileDTO | null;
+  isOfficiallyManaged: boolean | null;
+  currency: string;
+  receivesOrders: boolean | null;
+  /** "FREE" quand aucun abonnement n'est actif. */
+  planName: string;
+}
+
+/**
+ * Forme complète v1 de l'offre, imbriquée dans `OrderItemDTO.offer` — plus large que
+ * `OfferDetailDTO`/`OfferTileDTO` (v2) : `provider` complet, `location`,
+ * `providerHandlesDelivery`, `preference`, rating à plat au lieu de `RatingSummaryDTO`.
+ */
+export interface OrderOfferDTO {
+  id: string;
+  name: string;
+  description: string;
+  prices: PriceDTO[];
+  /** Peuplé côté listes (où `prices` ne l'est pas) ; `null` quand `prices` est déjà rempli. */
+  priceCount: number | null;
+  availabilities: AvailabilityDTO[];
+  images: FileDTO[];
+  catalogue: CatalogueRefDTO | null;
+  preference: ViewPreferenceDTO | null;
+  status: OfferStatus;
+  provider: OrderProviderDTO;
+  totalRating: number;
+  ratingCount: number;
+  location: GeoLocation;
+  providerHandlesDelivery: boolean;
+  createdAt: string;
+  updatedAt: string;
+  marketplaceProfile: OfferMarketplaceProfileDTO | null;
+}
+
+/** Réponse — un article de commande, imbriqué dans `OrderDTO.items`. */
+export interface OrderItemDTO {
+  id: string;
+  state: string;
+  rejected: boolean;
+  cancelledByUser: boolean;
+  cancelledByProvider: boolean;
+  offer: OrderOfferDTO;
+  prices: OrderItemPriceDTO[];
+}
+
+/** Réponse de POST /locale/app/v2/orders (docs/apis/apps/locale.md §7, yodoo_back). */
+export interface OrderDTO {
+  id: string;
+  locale: string;
+  itemsCount: number;
+  items: OrderItemDTO[];
+  validatedByCustomer: boolean;
+  validatedByLocale: boolean;
+  completed: boolean;
+  allFinalPricesSet: boolean;
+  requiresManualPricing: boolean;
+  started: boolean;
+  hasPendingItem: boolean;
+  hasProcessingItem: boolean;
+  allProcessing: boolean;
+  fullyFulfilled: boolean;
+  hasRejectedItem: boolean;
+  hasItemCancelledByUser: boolean;
+  hasItemCancelledByProvider: boolean;
+  openItemCount: number;
+  closedItemCount: number;
+  note: string | null;
+  customer: CustomerProfileDTO | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Réponse de POST /locale/app/v2/orders/{order}/pay/mobile-money (docs/apis/apps/locale.md §7,
+ * yodoo_back). `totalDue` est le solde restant dû (recalculé à chaque paiement confirmé), pas le
+ * montant facial d'origine — `totalDue + amountPaid` le redonne si besoin.
+ */
+export interface InvoiceDTO {
+  id: string;
+  reason: string;
+  status: string;
+  totalDue: number;
+  amountPaid: number;
+  currencyType: string;
+  createdAt: string;
+  updatedAt: string;
+}
