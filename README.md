@@ -59,7 +59,7 @@ export const yodoo = new YodooClient({
 
 ### `new YodooClient(options)`
 
-Le client contacte toujours `https://yodoo.space/api` — ce n'est pas configurable.
+Le client contacte toujours `https://api.yodoo.space` — ce n'est pas configurable.
 
 | Option | Requis | Description |
 |---|---|---|

@@ -24,7 +24,7 @@ import type {
 const MAX_PAGE_SIZE = 30;
 
 /** Seul backend Yodoo pris en charge — non configurable. */
-const API_BASE_URL = "https://yodoo.space/api";
+const API_BASE_URL = "https://api.yodoo.space";
 
 /** Taille par défaut du cache en mémoire de `getFile()` — voir `YodooClientOptions.fileCacheMaxBytes`. */
 const DEFAULT_FILE_CACHE_MAX_BYTES = 50 * 1024 * 1024;
