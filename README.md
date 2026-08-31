@@ -8,13 +8,14 @@ Ce package n'est pas publié sur npm. Il s'installe directement depuis son dép�
 
 ## Installation
 
-Une fois ce dossier poussé sur votre propre dépôt git :
-
 ```bash
-npm install git+https://github.com/<votre-compte>/yodoo-sdk.git
+npm install git+https://github.com/badga24/yodoo-sdk.git#v0.6.0
 # ou, avec SSH :
-npm install git+ssh://git@github.com/<votre-compte>/yodoo-sdk.git
+npm install git+ssh://git@github.com/badga24/yodoo-sdk.git#v0.6.0
 ```
+
+Le suffixe `#v0.6.0` fige une version précise (voir les tags du dépôt) ; sans lui, `npm install`
+suit la branche par défaut.
 
 `npm install` déclenche automatiquement `npm run build` (script `prepare`) : aucune étape
 manuelle n'est nécessaire, `dist/` n'a pas besoin d'être commité.
@@ -82,7 +83,7 @@ Le client contacte toujours `https://api.yodoo.space` — ce n'est pas configura
 | `getTopOffers(params?)` | `GET /locale/app/top-offers` (v1, pas d'équivalent v2) | `TopOffersDTO` |
 | `getContent(ifModifiedSince?)` | `GET /locale/app/v2/content` | `ContentResult` (clé → HTML ; throttlé à 1 payload réel/heure/app, voir plus bas) |
 | `registerCustomerFromToken(token)` | `POST /locale/app/v2/customers/from-token` | `CustomerProfileDTO` |
-| `createOrder(items, offlineAuthorizationCode, note?)` | `POST /locale/app/v2/orders` | `OrderDTO` (vente comptoir, articles nés `CLOSED`) |
+| `createOrder(items, offlineAuthorizationCode?, note?)` | `POST /locale/app/v2/orders` | `OrderDTO` (vente comptoir, articles nés `CLOSED`) |
 | `payOrderByMobileMoney(orderId, params)` | `POST /locale/app/v2/orders/{order}/pay/mobile-money` | `InvoiceDTO` |
 | `getFileUrl(fileId)` | — | URL publique de streaming d'un fichier (`FileDTO.id`) |
 | `getFile(fileId)` | — | `{ bytes, contentType, cacheControl }` — télécharge le fichier, mis en cache en mémoire (voir plus bas) |
@@ -161,15 +162,16 @@ try {
   1h, voir `invalidateCache()`) — deux appels identiques à `listOffers()` dans l'heure ne font
   qu'une requête HTTP.
 - Un site tiers appelant l'API directement depuis le navigateur sera bloqué par CORS sauf
-  si son origine est whitelistée côté backend — faire les appels depuis le serveur.
-- La plupart des routes exposées sont en lecture seule. Les exceptions : `registerCustomerFromToken`
-  (depuis le 04/08/2026) et, depuis le 31/08/2026, `createOrder`/`payOrderByMobileMoney` — voir
-  `docs/apis/apps/locale.md` §5 et §7 côté `yodoo_back`.
+  si son origine est whitelistée côté Yodoo — faire les appels depuis le serveur.
+- La plupart des routes exposées sont en lecture seule. Les exceptions : `registerCustomerFromToken`,
+  `createOrder` et `payOrderByMobileMoney`.
 - `createOrder` et `payOrderByMobileMoney` agissent au nom d'un client précis, identifié par un
   `offlineAuthorizationCode` (code hors-ligne signé, généré côté app cliente — hors-scope de ce
-  SDK). Une app tierce n'ayant qu'un credential d'intégration, ce code est obligatoire sur les
-  deux appels : `LocaleAppV2ControllerImpl` rejette (403) toute requête qui l'omet avant même de
-  construire la commande ou d'initier le paiement.
+  SDK). Sur `payOrderByMobileMoney`, ce code est obligatoire : toute requête qui l'omet est
+  rejetée (403) avant même d'initier le paiement. Sur `createOrder`, il est optionnel — l'omettre
+  attribue la commande au profil auto-référentiel du commerce plutôt qu'à un client identifié
+  (utile pour une intégration sans notion de client connecté, ex. commande anonyme depuis un site
+  vitrine) ; passer `note` pour transmettre des coordonnées collectées côté formulaire dans ce cas.
 
 ## Développement
 
@@ -179,3 +181,13 @@ npm run build      # compile src/ -> dist/
 npm test           # vitest
 npm run typecheck
 ```
+
+## Historique des versions
+
+- **04/08/2026** — ajout de `registerCustomerFromToken`.
+- **30/08/2026** — `idempotencyKey` devient obligatoire sur `payOrderByMobileMoney` (avant cette
+  date, un retry réseau côté app pouvait déclencher un second transfert pour un même achat).
+- **31/08/2026** — ajout de `createOrder`/`payOrderByMobileMoney`, avec `offlineAuthorizationCode`
+  obligatoire sur les deux.
+- **01/09/2026** — `offlineAuthorizationCode` devient optionnel sur `createOrder` (toujours
+  obligatoire sur `payOrderByMobileMoney`).

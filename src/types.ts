@@ -436,11 +436,9 @@ export interface PayOrderByMobileMoneyParams {
   providerCode: MobileMoneyProviderCode;
   countryCode: MobileMoneyCountryCode;
   /**
-   * Identifie le client au nom de qui payer (code hors-ligne signé, généré côté app cliente —
-   * voir docs/apis/customer/business.md §8 dans yodoo_back pour le détail de génération). Pas
-   * `@NotNull` au niveau du DTO backend, mais `LocaleAppV2ControllerImpl` rejette explicitement
-   * (403) toute app tierce qui l'omet avant même de tenter le paiement — donc obligatoire en
-   * pratique pour ce client.
+   * Identifie le client au nom de qui payer (code hors-ligne signé, généré côté app cliente).
+   * Techniquement optionnel côté DTO mais rejeté (403) par Yodoo si absent — payer une
+   * commande agit forcément au nom d'un client précis, donc obligatoire en pratique.
    */
   offlineAuthorizationCode: string;
   /**

@@ -169,10 +169,10 @@ export class YodooClient {
   /**
    * POST /locale/app/v2/customers/from-token — échange le jeton de partage court terme
    * (~5 min) qu'un client a généré côté app cliente contre son enregistrement comme
-   * customer de ce commerce. Seul endpoint d'écriture du client (docs/apis/apps/locale.md
-   * §5, yodoo_back). Le transmettre vaut consentement explicite du client : le backend
-   * bascule `allowPersonalData` à `true` et copie son nom sur le profil. Idempotent : rejouer
-   * le même jeton dans sa fenêtre de validité ré-enregistre/retrouve le même profil.
+   * customer de ce commerce. Seul endpoint d'écriture du client. Le transmettre vaut
+   * consentement explicite du client : Yodoo bascule `allowPersonalData` à `true` et copie
+   * son nom sur le profil. Idempotent : rejouer le même jeton dans sa fenêtre de validité
+   * ré-enregistre/retrouve le même profil.
    */
   registerCustomerFromToken(token: string): Promise<CustomerProfileDTO> {
     return this.http.post<CustomerProfileDTO>(`${V2_BASE}/customers/from-token`, {
@@ -181,17 +181,22 @@ export class YodooClient {
   }
 
   /**
-   * POST /locale/app/v2/orders — crée une commande "vente comptoir" au nom du client identifié
-   * par `offlineAuthorizationCode` (code hors-ligne signé, généré côté app cliente — voir
-   * docs/apis/apps/locale.md §7, yodoo_back). `finalPrice` est requis sur chaque ligne de
-   * `items` : c'est le commerce qui fixe le prix, pas le client qui choisit parmi des prix
-   * publiés. Les articles naissent `CLOSED` (stock et revenu comptabilisés immédiatement).
-   * Le `publicId` de la commande est imposé par le code : un code donné ne peut créer qu'une
-   * seule commande (rejeu → 409).
+   * POST /locale/app/v2/orders — crée une commande "vente comptoir". `finalPrice` est requis
+   * sur chaque ligne de `items` : c'est le commerce qui fixe le prix, pas le client qui
+   * choisit parmi des prix publiés. Les articles naissent `CLOSED` (stock et revenu
+   * comptabilisés immédiatement).
+   *
+   * `offlineAuthorizationCode` (code hors-ligne signé, généré côté app cliente) identifie le
+   * client au nom de qui la commande est passée et impose le `publicId` de la commande : un
+   * code donné ne peut créer qu'une seule commande (rejeu → 409). Optionnel : omis, la commande
+   * est attribuée au profil auto-référentiel du commerce plutôt qu'à un client identifié — utile
+   * pour une intégration sans notion de client connecté (ex. commande anonyme depuis un site
+   * vitrine). Utiliser `note` pour transmettre des coordonnées collectées côté formulaire dans
+   * ce cas.
    */
   createOrder(
     items: CreateOrderItemDTO[],
-    offlineAuthorizationCode: string,
+    offlineAuthorizationCode?: string,
     note?: string
   ): Promise<OrderDTO> {
     return this.http.post<OrderDTO>(`${V2_BASE}/orders`, {
@@ -203,11 +208,11 @@ export class YodooClient {
 
   /**
    * POST /locale/app/v2/orders/{order}/pay/mobile-money — paie une commande de ce commerce par
-   * mobile money (docs/apis/apps/locale.md §7, yodoo_back). Le moyen de paiement source est
-   * trouvé ou créé automatiquement à partir de `phoneNumber`/`providerCode`/`countryCode` ; le
-   * client n'a pas besoin de l'avoir pré-enregistré. Règlement asynchrone via webhook.
-   * `idempotencyKey` est obligatoire depuis le 30/08/2026 : un retry réseau avec la même clé
-   * rejoue le résultat déjà obtenu au lieu de déclencher un second transfert.
+   * mobile money. Le moyen de paiement source est trouvé ou créé automatiquement à partir de
+   * `phoneNumber`/`providerCode`/`countryCode` ; le client n'a pas besoin de l'avoir
+   * pré-enregistré. Règlement asynchrone via webhook. `idempotencyKey` est obligatoire : un
+   * retry réseau avec la même clé rejoue le résultat déjà obtenu au lieu de déclencher un
+   * second transfert.
    */
   payOrderByMobileMoney(
     orderId: string,
