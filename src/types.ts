@@ -411,7 +411,13 @@ export interface CreateOrderItemDTO {
   prices: CreateOrderItemPriceDTO[];
 }
 
-export type MobileMoneyProviderCode = "MTN" | "MOOV" | "CELTIS";
+/**
+ * `TOGOCOM` (T-Money) est le seul de ces fournisseurs à n'être valide qu'avec
+ * `countryCode: "TG"` — les autres sont acceptés avec tous les `MobileMoneyCountryCode` sans
+ * garantie que l'opérateur y opère réellement (ex. `MTN`/`TG` est accepté bien que MTN
+ * n'opère pas au Togo).
+ */
+export type MobileMoneyProviderCode = "MTN" | "MOOV" | "CELTIS" | "TOGOCOM";
 
 export type MobileMoneyCountryCode =
   | "BJ"
