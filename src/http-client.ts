@@ -88,6 +88,26 @@ export class HttpClient {
     return { value, lastModified: response.headers.get("Last-Modified") };
   }
 
+  /**
+   * GET renvoyant la `Response` brute, corps non lu — pour un flux à parser en streaming
+   * (NDJSON, §7). Même retry-sur-401 que `get()`. Pas de cache (un flux ne se rejoue pas) ;
+   * lève une `DomainError` typée si la réponse n'est pas `ok`.
+   */
+  async getStream(path: string): Promise<Response> {
+    const url = this.buildUrl(path);
+    let response = await this.fetchWithToken(url, "GET");
+
+    if (response.status === 401) {
+      this.tokenProvider.invalidate();
+      response = await this.fetchWithToken(url, "GET");
+    }
+
+    if (!response.ok) {
+      throw await toDomainError(response);
+    }
+    return response;
+  }
+
   async post<T>(path: string, body: unknown): Promise<T> {
     const url = this.buildUrl(path);
     const response = await this.fetchWithToken(url, "POST", body);

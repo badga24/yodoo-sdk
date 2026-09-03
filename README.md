@@ -9,12 +9,12 @@ Ce package n'est pas publié sur npm. Il s'installe directement depuis son dép�
 ## Installation
 
 ```bash
-npm install git+https://github.com/badga24/yodoo-sdk.git#v0.6.0
+npm install git+https://github.com/badga24/yodoo-sdk.git#v0.7.0
 # ou, avec SSH :
-npm install git+ssh://git@github.com/badga24/yodoo-sdk.git#v0.6.0
+npm install git+ssh://git@github.com/badga24/yodoo-sdk.git#v0.7.0
 ```
 
-Le suffixe `#v0.6.0` fige une version précise (voir les tags du dépôt) ; sans lui, `npm install`
+Le suffixe `#v0.7.0` fige une version précise (voir les tags du dépôt) ; sans lui, `npm install`
 suit la branche par défaut.
 
 `npm install` déclenche automatiquement `npm run build` (script `prepare`) : aucune étape
@@ -80,6 +80,7 @@ Le client contacte toujours `https://api.yodoo.space` — ce n'est pas configura
 | `getOffer(id, params?)` | `GET /locale/app/v2/offers/{id}` | `OfferDetailDTO` (`params` pagine `prices`, pas la liste d'offres) |
 | `listEvents(params?)` | `GET /locale/app/v2/events` | `PageDTO<EventTileDTO>` (promotion résolue, ticket en id brut) |
 | `getEvent(id)` | `GET /locale/app/v2/events/{id}` | `EventDetailDTO` (promotion et ticket résolus) |
+| `sync(previousVersion?)` | `GET /locale/app/v2/sync` | `SyncResult` — état complet du commerce (contenu + catalogues + offres + événements) en un flux NDJSON cohérent (voir plus bas) |
 | `getTopOffers(params?)` | `GET /locale/app/top-offers` (v1, pas d'équivalent v2) | `TopOffersDTO` |
 | `getContent(ifModifiedSince?)` | `GET /locale/app/v2/content` | `ContentResult` (clé → HTML ; throttlé à 1 payload réel/heure/app, voir plus bas) |
 | `registerCustomerFromToken(token)` | `POST /locale/app/v2/customers/from-token` | `CustomerProfileDTO` |
@@ -108,12 +109,48 @@ incluses respectivement dans `getProvider()` (les trois premières) et `getOffer
 gratuitement les changements — un 304 renvoie `{ content: null, lastModified }` et ne
 consomme pas le quota horaire.
 
+**`sync(previousVersion?)`** : récupère en **un seul flux** tout ce qu'un rendu SSR à froid
+doit reconstruire — le contenu du site, tous les catalogues, toutes les offres visibles
+(avec leur description HTML complète, leurs prix et leurs fichiers inline — plus besoin
+d'appeler `getOffer`) et tous les événements — lus côté Yodoo dans une seule transaction
+cohérente. Remplace l'enchaînement `getContent` + `listCatalogues` + `getCatalogue`×N +
+`listOffers` (toutes les pages) + `getOffer`×N.
+
+```ts
+let knownVersion: string | undefined; // à persister entre deux rendus
+
+const snap = await yodoo.sync(knownVersion);
+if (!snap.unchanged) {
+  rebuildStore({
+    content: snap.content,       // Record<string, string> (clé → HTML)
+    catalogues: snap.catalogues, // SyncCatalogueDTO[]
+    offers: snap.offers,         // SyncOfferDTO[] (VISIBLE uniquement, prix + fichiers inline)
+    events: snap.events,         // SyncEventDTO[] (promotion résolue, ticket en id brut)
+  });
+  knownVersion = snap.version;
+}
+```
+
+- `version` est un **digest opaque** du snapshot : le stocker tel quel et ne reconstruire le
+  store local que s'il change. Ne pas l'interpréter ni le re-calculer. Le passer en
+  `previousVersion` renseigne `snap.unchanged` — le flux est quand même téléchargé en entier
+  (Yodoo ne répond pas en conditionnel sur cet endpoint).
+- Le flux est lu au fil de l'eau et **validé** : un corps tronqué (Yodoo répond `200` puis
+  échoue en cours de flux) ou des compteurs incohérents lèvent une **`SyncProtocolError`** —
+  garder le snapshot précédent dans ce cas.
+- `ticketOfferId` d'un événement est un id brut à résoudre contre `snap.offers`.
+- `catalogue.offerCount` compte les offres de tous statuts ; seules les offres `VISIBLE` sont
+  dans `snap.offers` — un écart est normal.
+- Budget : **1 build/heure/app** (429 au-delà), poll conseillé 1×/heure. Pas mis en cache
+  côté client (voir plus bas).
+
 **Cache en mémoire** : toutes les méthodes de lecture passant par un `GET` simple
 (`getProvider`, `listCatalogues`, `getCatalogue`, `listCatalogueOffers`, `listOffers`,
 `getOffer`, `listEvents`, `getEvent`, `getTopOffers`) sont mises en cache côté client, en
 mémoire, pour la durée du process — clé = URL complète (query incluse), TTL fixe **1h**, non
-configurable. `getContent()` n'est pas concerné (son propre mécanisme `ifModifiedSince` fait
-déjà ce rôle). `invalidateCache()` vide tout le cache d'un coup (pas d'invalidation
+configurable. `getContent()` et `sync()` n'y sont pas soumis (`getContent` a son propre
+mécanisme `ifModifiedSince` ; `sync` a son digest `version` et un budget serveur d'1
+appel/heure qui joue déjà ce rôle). `invalidateCache()` vide tout le cache d'un coup (pas d'invalidation
 granulaire par clé) ; à appeler quand on sait qu'une donnée a changé côté commerce et qu'on
 ne veut pas attendre l'expiration du TTL.
 
@@ -132,6 +169,8 @@ seulement de rappeler Yodoo depuis ce process.
 Les erreurs HTTP sont converties en instances typées de `DomainError` :
 `UnauthorizedError` (401), `ForbiddenError` (403), `NotFoundError` (404),
 `ValidationError` (400), `RateLimitedError` (429), `ServerError` (autres).
+`sync()` peut en plus lever `SyncProtocolError` (aussi une `DomainError`) quand le flux
+NDJSON reçu est tronqué ou incohérent.
 
 ```ts
 import { NotFoundError } from "yodoo-sdk";
@@ -191,3 +230,6 @@ npm run typecheck
   obligatoire sur les deux.
 - **01/09/2026** — `offlineAuthorizationCode` devient optionnel sur `createOrder` (toujours
   obligatoire sur `payOrderByMobileMoney`).
+- **03/09/2026** — ajout de `sync()` : flux NDJSON *full-replace* de tout le commerce
+  (contenu + catalogues + offres + événements) en une lecture cohérente, pour un rendu SSR
+  à froid sans enchaîner les appels unitaires.

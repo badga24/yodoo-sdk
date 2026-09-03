@@ -8,6 +8,7 @@ export {
   ValidationError,
   RateLimitedError,
   ServerError,
+  SyncProtocolError,
 } from "./errors.js";
 
 export { formatMoney } from "./money.js";
@@ -52,4 +53,10 @@ export type {
   PageParams,
   ListOffersParams,
   TopOffersParams,
+  SyncCounts,
+  SyncCatalogueDTO,
+  SyncOfferDTO,
+  SyncEventDTO,
+  SyncSnapshot,
+  SyncResult,
 } from "./types.js";

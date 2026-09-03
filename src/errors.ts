@@ -39,6 +39,16 @@ export class ServerError extends DomainError {
   readonly code = "SERVER_ERROR";
 }
 
+/**
+ * Le flux NDJSON de `sync()` n'est pas conforme (ligne `end` absente = corps tronqué,
+ * compteurs qui ne collent pas à `meta.counts`, ligne illisible, ordre invalide...). Le
+ * backend a pu répondre `200` tout en plantant en cours de stream : sur cette erreur, le
+ * client DOIT conserver la version de synchronisation précédente.
+ */
+export class SyncProtocolError extends DomainError {
+  readonly code = "SYNC_PROTOCOL_ERROR";
+}
+
 interface ApiErrorBody {
   status?: string;
   message?: string;

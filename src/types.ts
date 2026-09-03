@@ -389,7 +389,113 @@ export interface TopOffersParams {
   limit?: number;
 }
 
-// --- Commandes (POST /locale/app/v2/orders, .../pay/mobile-money — docs/apis/apps/locale.md §7, yodoo_back) ---
+// --- Synchronisation full-replace NDJSON (GET /locale/app/v2/sync — docs/apis/apps/locale.md §7, yodoo_back) ---
+
+/** Nombre de lignes attendu par domaine, annoncé dans la ligne `meta` du flux — sert à détecter un corps tronqué. */
+export interface SyncCounts {
+  catalogues: number;
+  offers: number;
+  events: number;
+  /** Toujours 1 (la ligne `content` est unique, sa map peut être vide). */
+  content: number;
+}
+
+/**
+ * Ligne `catalogue` du flux `sync()` — même forme que `CatalogueDetailDTO`
+ * (le flux porte le détail complet, pas la tuile).
+ */
+export interface SyncCatalogueDTO {
+  id: string;
+  name: string;
+  description: string;
+  /** `FileDTO` = référence seule, jamais d'octets (bytes via `getFileUrl()` / `/public/file/**`). */
+  cover: FileDTO | null;
+  /**
+   * Compte toutes les offres du catalogue, tous statuts — pas seulement les `VISIBLE`
+   * streamées comme lignes `offer`. Un écart avec le nombre de lignes `offer` d'un même
+   * catalogue est donc attendu.
+   */
+  offerCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Ligne `offer` du flux `sync()` — offres `VISIBLE` uniquement (pas de champ `status`),
+ * `description` HTML complète inline, prix et fichiers embarqués : le consommateur n'appelle
+ * plus jamais `getOffer(id)`.
+ */
+export interface SyncOfferDTO {
+  id: string;
+  name: string;
+  /** HTML complet, inline (pas de troncature). */
+  description: string;
+  catalogueId: string | null;
+  /** Cover incluse (repérable via `modelFileType`) ; références seules, jamais d'octets. */
+  files: FileDTO[];
+  /** `PriceDTO` v2, promotions actives déjà résolues dans les montants. */
+  prices: PriceDTO[];
+  rating: RatingSummaryDTO;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Ligne `event` du flux `sync()` — `EventTileDTO` sans `ownRsvp` (un credential d'app n'est
+ * pas un visiteur) ni `provider` (implicite). `promotion` résolue ; `ticketOfferId` reste un
+ * id brut, à résoudre contre les lignes `offer` du même flux.
+ */
+export interface SyncEventDTO {
+  id: string;
+  name: string;
+  description: string;
+  location: GeoLocation;
+  startDate: string;
+  endDate: string;
+  promotion: PromotionDTO | null;
+  ticketOfferId: string | null;
+  cover: FileDTO | null;
+  goingCount: number;
+  interestedCount: number;
+  postCount: number;
+  viewCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Résultat de `sync()` (GET /locale/app/v2/sync, docs/apis/apps/locale.md §7, yodoo_back) —
+ * l'état complet du commerce lu en une seule transaction cohérente.
+ */
+export interface SyncSnapshot {
+  /**
+   * Digest opaque de ce snapshot (SHA-256 tronqué hex). À **stocker tel quel** et comparer
+   * par égalité stricte au digest précédent : ne reconstruire le store local que s'il a
+   * changé. Ne pas l'interpréter, ne pas l'ordonner, ne pas re-hasher le corps pour le
+   * vérifier.
+   */
+  version: string;
+  /** Instant de génération du snapshot côté serveur (ISO 8601). */
+  generatedAt: string;
+  /** Contenu HTML du site vitrine (clé → HTML), identique à `getContent()`. Map éventuellement vide. */
+  content: Record<string, string>;
+  catalogues: SyncCatalogueDTO[];
+  offers: SyncOfferDTO[];
+  events: SyncEventDTO[];
+  /** Total des lignes de données reçues (tout ce qui est entre `meta` et `end`). */
+  records: number;
+}
+
+export interface SyncResult extends SyncSnapshot {
+  /**
+   * `true` si un `previousVersion` a été passé à `sync()` et qu'il est identique à `version` :
+   * le store local est déjà à jour, rien à reconstruire. Le flux a quand même été téléchargé
+   * en entier (le backend ne sait pas répondre en conditionnel sur cet endpoint).
+   */
+  unchanged: boolean;
+}
+
+// --- Commandes (POST /locale/app/v2/orders, .../pay/mobile-money — docs/apis/apps/locale.md §8, yodoo_back) ---
 
 export interface CreateOrderItemPriceSettingDTO {
   setting: string;
@@ -565,7 +671,7 @@ export interface OrderItemDTO {
   prices: OrderItemPriceDTO[];
 }
 
-/** Réponse de POST /locale/app/v2/orders (docs/apis/apps/locale.md §7, yodoo_back). */
+/** Réponse de POST /locale/app/v2/orders (docs/apis/apps/locale.md §8, yodoo_back). */
 export interface OrderDTO {
   id: string;
   locale: string;
@@ -593,7 +699,7 @@ export interface OrderDTO {
 }
 
 /**
- * Réponse de POST /locale/app/v2/orders/{order}/pay/mobile-money (docs/apis/apps/locale.md §7,
+ * Réponse de POST /locale/app/v2/orders/{order}/pay/mobile-money (docs/apis/apps/locale.md §8,
  * yodoo_back). `totalDue` est le solde restant dû (recalculé à chaque paiement confirmé), pas le
  * montant facial d'origine — `totalDue + amountPaid` le redonne si besoin.
  */
