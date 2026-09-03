@@ -208,8 +208,8 @@ seulement de rappeler Yodoo depuis ce process.
 Les erreurs HTTP sont converties en instances typées de `DomainError` :
 `UnauthorizedError` (401), `ForbiddenError` (403), `NotFoundError` (404),
 `ValidationError` (400), `RateLimitedError` (429), `ServerError` (autres).
-`sync()` peut en plus lever `SyncProtocolError` (aussi une `DomainError`) quand le flux
-NDJSON reçu est tronqué ou incohérent.
+`sync()` / `syncMain()` / `syncOthers()` peuvent en plus lever `SyncProtocolError` (aussi une
+`DomainError`) quand un flux NDJSON reçu est tronqué ou incohérent avec son `meta.counts`.
 
 ```ts
 import { NotFoundError } from "yodoo-sdk";
@@ -269,15 +269,21 @@ npm run typecheck
   obligatoire sur les deux.
 - **01/09/2026** — `offlineAuthorizationCode` devient optionnel sur `createOrder` (toujours
   obligatoire sur `payOrderByMobileMoney`).
-- **03/09/2026** — ajout de `sync()` : flux NDJSON *full-replace* de tout le commerce
-  (contenu + catalogues + offres visibles + événements) en une lecture cohérente, pour un
-  rendu SSR à froid sans enchaîner les appels unitaires. Renvoie un `SyncStore` (lookup par
-  id résolu en mémoire) ; `SyncResult` de la v0.7.0 est retiré.
-- **03/09/2026** — option `autoSync` (lance `sync()` à la construction, non bloquant) +
-  `getStore()` (`sync()` mémoïsé) / `refreshStore()` (re-sync forcée).
-- **03/09/2026** — la synchro est **scindée en deux flux** `sync/main` (catalogues + offres) et
-  `sync/others` (contenu + événements), chacun avec son `version` et son budget horaire.
-  `sync()` lit les deux ; `syncMain()` / `syncOthers()` exposent chaque flux, `refreshStore("main"
-  | "others")` en rafraîchit un seul. `store.version` / `store.unchanged` deviennent
-  `{ main, others }`. Sur la ligne `event`, `ticketOfferId` est remplacé par `ticketOffer`
-  (billet résolu inline : `{ id, name, description, status }`).
+- **03/09/2026** — synchronisation *full-replace* pour rendu SSR à froid, en remplacement du
+  fan-out `getContent` + `listCatalogues`/`getCatalogue`×N + `listOffers` + `getOffer`×N :
+  - `sync()` lit **deux flux NDJSON** — `sync/main` (catalogues + offres `VISIBLE`,
+    prix/fichiers inline) et `sync/others` (contenu du site + événements, `promotion` et
+    `ticketOffer` résolus inline) — et renvoie un `SyncStore` : lookup par id résolu en
+    mémoire (`getOffer` / `getCatalogue` / `getEvent`), `version` / `unchanged` par flux
+    (`{ main, others }`), `resolveTicket()`, `toJSON()`.
+  - Bas niveau : `syncMain()` / `syncOthers()`. Rafraîchissement : `refreshStore()` (les deux)
+    ou `refreshStore("main" | "others")` (un seul).
+  - `getStore()` mémoïse `sync()` ; l'option client `autoSync` le lance dès la construction,
+    sans bloquer.
+  - Un flux tronqué ou incohérent avec son `meta.counts` lève `SyncProtocolError`. Budget
+    serveur : 1 build/heure/app **par flux**.
+
+  *(Livré par étapes le 03/09/2026 : `sync()` d'abord monolithe renvoyant un `SyncResult`
+  (v0.7.0) puis un `SyncStore` (v0.8.0), `autoSync`/`getStore()` (v0.9.0), scission en deux
+  flux + `event.ticketOfferId` → `event.ticketOffer` (v0.10.0). La description ci-dessus est
+  celle de la v0.10.0.)*
