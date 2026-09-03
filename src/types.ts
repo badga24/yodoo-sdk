@@ -389,19 +389,29 @@ export interface TopOffersParams {
   limit?: number;
 }
 
-// --- Synchronisation full-replace NDJSON (GET /locale/app/v2/sync — docs/apis/apps/locale.md §7, yodoo_back) ---
+// --- Synchronisation full-replace NDJSON (docs/apis/apps/locale.md §7, yodoo_back) ---
+//
+// Deux flux indépendants depuis le 03/09/2026 :
+//   GET /locale/app/v2/sync/main   -> lignes `catalogue` + `offer` (VISIBLE)
+//   GET /locale/app/v2/sync/others -> ligne `content` (1) + lignes `event`
+// Chacun a son propre `version`, son propre `meta.counts` (ses domaines seulement) et son
+// propre budget horaire. `YodooClient.sync()` lit les deux et les recompose en un `SyncStore`.
 
-/** Nombre de lignes attendu par domaine, annoncé dans la ligne `meta` du flux — sert à détecter un corps tronqué. */
-export interface SyncCounts {
+/** `meta.counts` du flux `sync/main` — sert à détecter un corps tronqué. */
+export interface SyncMainCounts {
   catalogues: number;
   offers: number;
-  events: number;
+}
+
+/** `meta.counts` du flux `sync/others`. */
+export interface SyncOthersCounts {
   /** Toujours 1 (la ligne `content` est unique, sa map peut être vide). */
   content: number;
+  events: number;
 }
 
 /**
- * Ligne `catalogue` du flux `sync()` — même forme que `CatalogueDetailDTO`
+ * Ligne `catalogue` du flux `sync/main` — même forme que `CatalogueDetailDTO`
  * (le flux porte le détail complet, pas la tuile).
  */
 export interface SyncCatalogueDTO {
@@ -421,7 +431,7 @@ export interface SyncCatalogueDTO {
 }
 
 /**
- * Ligne `offer` du flux `sync()` — offres `VISIBLE` uniquement (pas de champ `status`),
+ * Ligne `offer` du flux `sync/main` — offres `VISIBLE` uniquement (pas de champ `status`),
  * `description` HTML complète inline, prix et fichiers embarqués : le consommateur n'appelle
  * plus jamais `getOffer(id)`.
  */
@@ -441,9 +451,8 @@ export interface SyncOfferDTO {
 }
 
 /**
- * Ligne `event` du flux `sync()` — `EventTileDTO` sans `ownRsvp` (un credential d'app n'est
- * pas un visiteur) ni `provider` (implicite). `promotion` résolue ; `ticketOfferId` reste un
- * id brut, à résoudre contre les lignes `offer` du même flux.
+ * Ligne `event` du flux `sync/others` — `EventTileDTO` sans `ownRsvp` (un credential d'app
+ * n'est pas un visiteur) ni `provider` (implicite). `promotion` résolue.
  */
 export interface SyncEventDTO {
   id: string;
@@ -453,7 +462,16 @@ export interface SyncEventDTO {
   startDate: string;
   endDate: string;
   promotion: PromotionDTO | null;
-  ticketOfferId: string | null;
+  /**
+   * Billet **résolu inline** (`{ id, name, description, status }` — même forme que
+   * `EventDetailDTO.ticket`), ou `null` si l'événement n'a pas de billet. Les **prix et
+   * fichiers** du billet ne sont pas ici : quand `ticketOffer.status === "VISIBLE"`, ils
+   * arrivent via la ligne `offer` correspondante dans `sync/main` (jointure sur
+   * `ticketOffer.id` — voir `SyncStore.resolveTicket()`). Tolérer un `ticketOffer` non encore
+   * joignable juste après la création d'un événement à billet : le CTA se rend déjà avec le
+   * nom + le statut.
+   */
+  ticketOffer: EventTicketDTO | null;
   cover: FileDTO | null;
   goingCount: number;
   interestedCount: number;
@@ -464,28 +482,44 @@ export interface SyncEventDTO {
 }
 
 /**
- * État complet du commerce lu par `GET /locale/app/v2/sync` (docs/apis/apps/locale.md §7,
- * yodoo_back) en une seule transaction cohérente. POJO sérialisable — `YodooClient.sync()`
- * en renvoie une vue indexée (`SyncStore`) ; c'est aussi ce que produit `SyncStore.toJSON()`
- * et ce qu'attend `new SyncStore(snapshot)`.
+ * Moitié `sync/main` d'un snapshot — catalogues + offres visibles, lus dans une seule
+ * transaction cohérente. `version` : digest opaque **de ce flux** (SHA-256 tronqué hex), à
+ * stocker tel quel et comparer par égalité stricte ; ne rien en déduire d'autre.
  */
-export interface SyncSnapshot {
-  /**
-   * Digest opaque de ce snapshot (SHA-256 tronqué hex). À **stocker tel quel** et comparer
-   * par égalité stricte au digest précédent : ne reconstruire le store local que s'il a
-   * changé. Ne pas l'interpréter, ne pas l'ordonner, ne pas re-hasher le corps pour le
-   * vérifier.
-   */
+export interface SyncMainSnapshot {
   version: string;
-  /** Instant de génération du snapshot côté serveur (ISO 8601). */
+  /** Instant de génération côté serveur (ISO 8601). */
+  generatedAt: string;
+  catalogues: SyncCatalogueDTO[];
+  offers: SyncOfferDTO[];
+  /** Total des lignes de données de ce flux (entre `meta` et `end`). */
+  records: number;
+}
+
+/**
+ * Moitié `sync/others` d'un snapshot — contenu du site + événements. `version` : digest
+ * opaque **de ce flux**, indépendant de celui de `sync/main`.
+ */
+export interface SyncOthersSnapshot {
+  version: string;
+  /** Instant de génération côté serveur (ISO 8601). */
   generatedAt: string;
   /** Contenu HTML du site vitrine (clé → HTML), identique à `getContent()`. Map éventuellement vide. */
   content: Record<string, string>;
-  catalogues: SyncCatalogueDTO[];
-  offers: SyncOfferDTO[];
   events: SyncEventDTO[];
-  /** Total des lignes de données reçues (tout ce qui est entre `meta` et `end`). */
+  /** Total des lignes de données de ce flux (entre `meta` et `end`). */
   records: number;
+}
+
+/**
+ * Snapshot complet du commerce = les deux moitiés (`sync/main` + `sync/others`), prises à
+ * quelques secondes d'écart. POJO sérialisable — `YodooClient.sync()` en renvoie une vue
+ * indexée (`SyncStore`) ; c'est aussi ce que produit `SyncStore.toJSON()` et ce qu'attend
+ * `new SyncStore(snapshot)`.
+ */
+export interface SyncSnapshot {
+  main: SyncMainSnapshot;
+  others: SyncOthersSnapshot;
 }
 
 // --- Commandes (POST /locale/app/v2/orders, .../pay/mobile-money — docs/apis/apps/locale.md §8, yodoo_back) ---

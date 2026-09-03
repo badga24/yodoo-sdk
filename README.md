@@ -9,12 +9,12 @@ Ce package n'est pas publié sur npm. Il s'installe directement depuis son dép�
 ## Installation
 
 ```bash
-npm install git+https://github.com/badga24/yodoo-sdk.git#v0.9.0
+npm install git+https://github.com/badga24/yodoo-sdk.git#v0.10.0
 # ou, avec SSH :
-npm install git+ssh://git@github.com/badga24/yodoo-sdk.git#v0.9.0
+npm install git+ssh://git@github.com/badga24/yodoo-sdk.git#v0.10.0
 ```
 
-Le suffixe `#v0.9.0` fige une version précise (voir les tags du dépôt) ; sans lui, `npm install`
+Le suffixe `#v0.10.0` fige une version précise (voir les tags du dépôt) ; sans lui, `npm install`
 suit la branche par défaut.
 
 `npm install` déclenche automatiquement `npm run build` (script `prepare`) : aucune étape
@@ -81,9 +81,11 @@ Le client contacte toujours `https://api.yodoo.space` — ce n'est pas configura
 | `getOffer(id, params?)` | `GET /locale/app/v2/offers/{id}` | `OfferDetailDTO` (`params` pagine `prices`, pas la liste d'offres) |
 | `listEvents(params?)` | `GET /locale/app/v2/events` | `PageDTO<EventTileDTO>` (promotion résolue, ticket en id brut) |
 | `getEvent(id)` | `GET /locale/app/v2/events/{id}` | `EventDetailDTO` (promotion et ticket résolus) |
-| `sync(previousVersion?)` | `GET /locale/app/v2/sync` | `SyncStore` — vue indexée (lookup par id, en mémoire) de tout le commerce : contenu + catalogues + offres visibles + événements (voir plus bas) |
+| `sync(previous?)` | `GET /locale/app/v2/sync/main` + `.../sync/others` | `SyncStore` — vue indexée (lookup par id, en mémoire) de tout le commerce, recomposée depuis les deux flux (voir plus bas) |
+| `syncMain()` | `GET /locale/app/v2/sync/main` | `SyncMainSnapshot` — catalogues + offres visibles (bas niveau) |
+| `syncOthers()` | `GET /locale/app/v2/sync/others` | `SyncOthersSnapshot` — contenu du site + événements (bas niveau) |
 | `getStore()` | — | `Promise<SyncStore>` — `sync()` mémoïsé : 1er appel le déclenche, suivants renvoient le même store |
-| `refreshStore()` | — | `Promise<SyncStore>` — force une re-synchronisation (avec `previousVersion`) et remplace le store mémoïsé |
+| `refreshStore(scope?)` | — | `Promise<SyncStore>` — re-synchronise les deux flux (ou seulement `"main"` / `"others"`) et remplace le store mémoïsé |
 | `getTopOffers(params?)` | `GET /locale/app/top-offers` (v1, pas d'équivalent v2) | `TopOffersDTO` |
 | `getContent(ifModifiedSince?)` | `GET /locale/app/v2/content` | `ContentResult` (clé → HTML ; throttlé à 1 payload réel/heure/app, voir plus bas) |
 | `registerCustomerFromToken(token)` | `POST /locale/app/v2/customers/from-token` | `CustomerProfileDTO` |
@@ -112,14 +114,21 @@ incluses respectivement dans `getProvider()` (les trois premières) et `getOffer
 gratuitement les changements — un 304 renvoie `{ content: null, lastModified }` et ne
 consomme pas le quota horaire.
 
-**`sync(previousVersion?)`** : récupère en **un seul flux** tout ce qu'un rendu SSR à froid
-doit reconstruire — le contenu du site, tous les catalogues, toutes les offres visibles
-(description HTML complète, prix et fichiers inline) et tous les événements — lus côté Yodoo
-dans une seule transaction cohérente. Remplace l'enchaînement `getContent` + `listCatalogues`
-+ `getCatalogue`×N + `listOffers` (toutes les pages) + `getOffer`×N.
+**`sync(previous?)`** : récupère tout ce qu'un rendu SSR à froid doit reconstruire — contenu
+du site, catalogues, offres visibles (description HTML complète, prix et fichiers inline),
+événements — via **deux flux NDJSON** lus en parallèle, chacun dans une transaction cohérente.
+Remplace l'enchaînement `getContent` + `listCatalogues` + `getCatalogue`×N + `listOffers`
+(toutes les pages) + `getOffer`×N.
 
-Renvoie un **`SyncStore`** : une vue indexée du snapshot où les lookups par id se résolvent
-**en mémoire, sans appel réseau**.
+Deux flux **indépendants** (un changement dans l'un n'oblige pas à retélécharger l'autre) :
+
+| Flux | Contenu | Cadence |
+|---|---|---|
+| `sync/main` | `catalogue` + `offer` (`VISIBLE`, prix/promos/fichiers inline) — le gros, ce qui bouge dans la journée | élevée |
+| `sync/others` | `content` (1) + `event` (`promotion` et `ticketOffer` résolus inline) — le « chrome », peu changeant | faible |
+
+`sync()` renvoie un **`SyncStore`** qui recompose les deux : vue indexée où les lookups par id
+se résolvent **en mémoire, sans appel réseau**.
 
 ```ts
 // lib/yodoo.ts — le sync démarre à la construction, sans bloquer l'import
@@ -130,43 +139,49 @@ export const yodoo = new YodooClient({
 });
 
 // dans un Server Component / Route Handler
-const store = await yodoo.getStore();   // attend le flux déjà en vol, puis le réutilise
+const store = await yodoo.getStore();   // attend les flux déjà en vol, puis les réutilise
 
 store.getOffer(offerId);                 // SyncOfferDTO | undefined  (aucun appel réseau)
 store.listOffers({ catalogue: catId });  // SyncOfferDTO[]  (VISIBLE uniquement)
 store.getCatalogue(catId);
 store.listCatalogues();
-store.getEvent(eventId);
-store.resolveTicket(event);              // ticketOfferId -> offre du snapshot
+store.getEvent(eventId);                 // event.ticketOffer résolu inline (id/nom/statut)
+store.resolveTicket(event);              // -> offre complète (prix/fichiers) via sync/main
 store.content["hero"];                   // Record<string, string>
+store.version;                           // { main, others } — digests opaques par flux
 ```
 
 Sans `autoSync`, `getStore()` déclenche le `sync()` au premier appel — même mémoïsation
-ensuite. Pour rafraîchir : `await yodoo.refreshStore()` (re-sync avec la `version` courante,
-remplace le store mémoïsé ; garde l'ancien si le flux échoue).
+ensuite. Pour rafraîchir : `await yodoo.refreshStore()` (les deux flux), ou
+`yodoo.refreshStore("main")` / `"others"` pour n'en re-télécharger qu'un (p. ex. piloté par
+le webhook à venir) — l'autre moitié du store est conservée.
 
 - **`getStore()` mémoïse** : un seul `sync()` par process, partagé par les appels concurrents.
-  Sur échec du flux, la mémo est vidée → le prochain `getStore()` retente. `autoSync` fait
-  juste ce premier `getStore()` depuis le constructeur (fire-and-forget ; une erreur du sync
-  initial ressurgit au prochain `getStore()`).
-- **Contenu du store** = ce que porte le flux : offres **`VISIBLE` uniquement** (donc pas de
-  champ `status`), pas de profil commerce (`getProvider()` reste un appel API), pas de
-  top-offres, détail événement réduit (`ticketOfferId` brut, pas de `posts`). Un id absent du
-  snapshot renvoie `undefined` — jamais de repli silencieux sur l'API.
-- **Snapshot figé** : le store ne se rafraîchit pas seul — passer par `refreshStore()`. Si
-  rien n'a changé, `store.unchanged` vaut `true` (le flux est quand même téléchargé — Yodoo
-  ne répond pas en conditionnel ici).
-- `store.version` est un **digest opaque** : le repasser tel quel en `previousVersion`, ne
-  pas l'interpréter ni le re-calculer.
-- `store.toJSON()` renvoie le snapshot brut (POJO) ; `new SyncStore(snapshot)` le reconstruit
-  sans appel réseau (persistance sur instance chaude, KV...).
-- Le flux est lu au fil de l'eau et **validé** : un corps tronqué (Yodoo répond `200` puis
-  échoue en cours de flux) ou des compteurs incohérents lèvent une **`SyncProtocolError`** —
-  garder le store précédent dans ce cas.
+  Sur échec, la mémo est vidée → le prochain `getStore()` retente. `autoSync` fait juste ce
+  premier `getStore()` depuis le constructeur (fire-and-forget ; une erreur du sync initial
+  ressurgit au prochain `getStore()`).
+- **Contenu du store** = ce que portent les flux : offres **`VISIBLE` uniquement** (donc pas
+  de champ `status`), pas de profil commerce (`getProvider()` reste un appel API), pas de
+  top-offres, pas de `posts` d'événement. Un id absent du snapshot renvoie `undefined` —
+  jamais de repli silencieux sur l'API.
+- **`resolveTicket(event)`** joint `event.ticketOffer.id` contre les offres de `sync/main`
+  pour l'offre-billet complète (prix/fichiers). `undefined` si le billet n'est pas `VISIBLE`,
+  ou pas encore dans le dernier `sync/main` (billet tout juste créé) — le nom + le statut
+  restent lisibles sur `event.ticketOffer`.
+- **Snapshot figé** : le store ne se rafraîchit pas seul — passer par `refreshStore()`.
+  `store.unchanged` (`{ main, others }`) indique, par flux, si le digest n'a pas bougé depuis
+  le `previous` fourni (le flux est quand même téléchargé — pas de conditionnel serveur).
+- `store.version` (`{ main, others }`) : **digests opaques**, à repasser tels quels en
+  `previous`, ne pas les interpréter ni les recalculer.
+- `store.toJSON()` renvoie le snapshot brut (`{ main, others }`) ; `new SyncStore(snapshot)`
+  le reconstruit sans appel réseau (persistance sur instance chaude, KV...).
+- Chaque flux est lu au fil de l'eau et **validé** : un corps tronqué (Yodoo répond `200`
+  puis échoue en cours de flux) ou des compteurs incohérents avec son `meta.counts` lèvent
+  une **`SyncProtocolError`** — garder le store précédent dans ce cas.
 - `catalogue.offerCount` compte les offres de tous statuts ; seules les `VISIBLE` sont dans le
   store — un écart est normal.
-- Budget : **1 build/heure/app** (429 au-delà), poll conseillé 1×/heure. Pas mis en cache
-  côté client (voir plus bas).
+- Budget : **1 build/heure/app par flux** (429 au-delà, indépendant), poll conseillé 1×/heure
+  par flux. Pas mis en cache côté client (voir plus bas).
 
 **Cache en mémoire** : toutes les méthodes de lecture passant par un `GET` simple
 (`getProvider`, `listCatalogues`, `getCatalogue`, `listCatalogueOffers`, `listOffers`,
@@ -174,7 +189,7 @@ remplace le store mémoïsé ; garde l'ancien si le flux échoue).
 mémoire, pour la durée du process — clé = URL complète (query incluse), TTL fixe **1h**, non
 configurable. `getContent()` et `sync()` n'y sont pas soumis (`getContent` a son propre
 mécanisme `ifModifiedSince` ; `sync()` renvoie un `SyncStore` figé qu'on rafraîchit
-explicitement, borné par le budget serveur d'1 appel/heure). `invalidateCache()` vide tout le cache d'un coup (pas d'invalidation
+explicitement, borné par le budget serveur d'1 appel/heure par flux). `invalidateCache()` vide tout le cache d'un coup (pas d'invalidation
 granulaire par clé) ; à appeler quand on sait qu'une donnée a changé côté commerce et qu'on
 ne veut pas attendre l'expiration du TTL.
 
@@ -260,3 +275,9 @@ npm run typecheck
   id résolu en mémoire) ; `SyncResult` de la v0.7.0 est retiré.
 - **03/09/2026** — option `autoSync` (lance `sync()` à la construction, non bloquant) +
   `getStore()` (`sync()` mémoïsé) / `refreshStore()` (re-sync forcée).
+- **03/09/2026** — la synchro est **scindée en deux flux** `sync/main` (catalogues + offres) et
+  `sync/others` (contenu + événements), chacun avec son `version` et son budget horaire.
+  `sync()` lit les deux ; `syncMain()` / `syncOthers()` exposent chaque flux, `refreshStore("main"
+  | "others")` en rafraîchit un seul. `store.version` / `store.unchanged` deviennent
+  `{ main, others }`. Sur la ligne `event`, `ticketOfferId` est remplacé par `ticketOffer`
+  (billet résolu inline : `{ id, name, description, status }`).

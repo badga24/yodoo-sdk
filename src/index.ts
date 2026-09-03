@@ -1,5 +1,9 @@
 export { YodooClient, type YodooClientOptions } from "./client.js";
-export { SyncStore, type SyncStoreOptions } from "./sync-store.js";
+export {
+  SyncStore,
+  type SyncStoreOptions,
+  type SyncUnchanged,
+} from "./sync-store.js";
 
 export {
   DomainError,
@@ -54,9 +58,12 @@ export type {
   PageParams,
   ListOffersParams,
   TopOffersParams,
-  SyncCounts,
+  SyncMainCounts,
+  SyncOthersCounts,
   SyncCatalogueDTO,
   SyncOfferDTO,
   SyncEventDTO,
+  SyncMainSnapshot,
+  SyncOthersSnapshot,
   SyncSnapshot,
 } from "./types.js";

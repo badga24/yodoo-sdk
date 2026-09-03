@@ -1,31 +1,29 @@
 import { SyncProtocolError } from "./errors.js";
 import type {
   SyncCatalogueDTO,
-  SyncCounts,
   SyncEventDTO,
+  SyncMainSnapshot,
   SyncOfferDTO,
-  SyncSnapshot,
+  SyncOthersSnapshot,
 } from "./types.js";
 
 /**
- * Parseur du flux NDJSON de `GET /locale/app/v2/sync` (docs/apis/apps/locale.md §7, yodoo_back).
+ * Parseurs des flux NDJSON de synchronisation (docs/apis/apps/locale.md §7, yodoo_back).
  *
- * Le flux est lu **au fil de l'eau** (jamais `JSON.parse` du corps entier) :
- * `meta` (1re ligne) → `content` (1) → `catalogue`* → `offer`* → `event`* → `end` (dernière ligne).
- * Toute anomalie (ligne `end` absente, compteurs incohérents avec `meta.counts`, ligne illisible,
- * `meta`/`content` en double, donnée après `end`) lève une `SyncProtocolError` : l'appelant garde
- * alors sa version de synchronisation précédente.
+ * Deux flux, même structure : `meta` (1re ligne, `counts` = domaines de ce flux) → lignes de
+ * données → `end` (dernière ligne, `version` + `records`). Lu **au fil de l'eau** (jamais
+ * `JSON.parse` du corps entier). Toute anomalie (ligne `end` absente, compteurs incohérents
+ * avec `meta.counts`, ligne illisible, type inattendu pour ce flux, donnée après `end`) lève
+ * une `SyncProtocolError` : l'appelant garde alors sa version précédente **de ce flux**.
+ *
+ *   /locale/app/v2/sync/main   -> `catalogue`×N puis `offer`×N
+ *   /locale/app/v2/sync/others -> `content` (exactement 1) puis `event`×N
  */
 
 interface MetaLine {
   type: "meta";
   generatedAt: string;
-  counts: SyncCounts;
-}
-
-interface ContentLine {
-  type: "content";
-  entries: Record<string, string> | null;
+  counts: Record<string, number>;
 }
 
 interface EndLine {
@@ -77,28 +75,54 @@ export async function* streamLines(
   if (tail) yield tail;
 }
 
-function assertMetaSeen(
-  meta: MetaLine | undefined,
-  lineNumber: number
-): asserts meta {
-  if (!meta) {
-    throw new SyncProtocolError(
-      `Ligne de données avant la ligne "meta" (ligne ${lineNumber})`
-    );
+interface ParsedStream {
+  generatedAt: string;
+  version: string;
+  records: number;
+  dataLines: number;
+  content?: Record<string, string>;
+  catalogues: SyncCatalogueDTO[];
+  offers: SyncOfferDTO[];
+  events: SyncEventDTO[];
+}
+
+/** Domaines connus et leur compteur effectif dans un `ParsedStream`. */
+function domainCount(domain: string, parsed: ParsedStream): number {
+  switch (domain) {
+    case "catalogues":
+      return parsed.catalogues.length;
+    case "offers":
+      return parsed.offers.length;
+    case "events":
+      return parsed.events.length;
+    case "content":
+      return parsed.content === undefined ? 0 : 1;
+    default:
+      throw new SyncProtocolError(
+        `Domaine inconnu dans "meta.counts" : ${JSON.stringify(domain)}`
+      );
   }
 }
 
-/** Assemble un `SyncSnapshot` à partir des lignes JSON déjà découpées du flux. */
-export async function parseSync(
-  lines: AsyncIterable<string>
-): Promise<SyncSnapshot> {
+/**
+ * Cœur commun aux deux flux : découpe les lignes, dispatche par `type` (seuls les types de
+ * `allowedDataTypes` sont acceptés comme données), puis valide `meta`/`end` et les compteurs.
+ */
+async function parseStream(
+  lines: AsyncIterable<string>,
+  allowedDataTypes: ReadonlySet<string>
+): Promise<ParsedStream> {
   let meta: MetaLine | undefined;
   let end: EndLine | undefined;
-  let content: Record<string, string> | undefined;
-  const catalogues: SyncCatalogueDTO[] = [];
-  const offers: SyncOfferDTO[] = [];
-  const events: SyncEventDTO[] = [];
-  let dataLines = 0;
+  const parsed: ParsedStream = {
+    generatedAt: "",
+    version: "",
+    records: 0,
+    dataLines: 0,
+    catalogues: [],
+    offers: [],
+    events: [],
+  };
   let lineNumber = 0;
 
   for await (const raw of lines) {
@@ -110,76 +134,72 @@ export async function parseSync(
       );
     }
 
-    let parsed: Record<string, unknown>;
+    let line: Record<string, unknown>;
     try {
-      parsed = JSON.parse(raw) as Record<string, unknown>;
+      line = JSON.parse(raw) as Record<string, unknown>;
     } catch {
       throw new SyncProtocolError(
         `Ligne NDJSON illisible (ligne ${lineNumber})`
       );
     }
 
-    // Les lignes de données portent un champ `type` discriminant qui ne fait pas partie
-    // du DTO : on le retire avant de conserver l'objet.
-    const { type: _discriminant, ...record } = parsed;
+    const type = line.type;
 
-    switch (parsed.type) {
-      case "meta":
-        if (meta) {
-          throw new SyncProtocolError('Deux lignes "meta" dans le flux');
-        }
-        if (lineNumber !== 1) {
-          throw new SyncProtocolError(
-            'La ligne "meta" doit être la première du flux'
-          );
-        }
-        meta = parsed as unknown as MetaLine;
-        break;
+    if (type === "meta") {
+      if (meta) throw new SyncProtocolError('Deux lignes "meta" dans le flux');
+      if (lineNumber !== 1) {
+        throw new SyncProtocolError(
+          'La ligne "meta" doit être la première du flux'
+        );
+      }
+      meta = line as unknown as MetaLine;
+      continue;
+    }
 
+    if (!meta) {
+      throw new SyncProtocolError(
+        `Ligne de données avant la ligne "meta" (ligne ${lineNumber})`
+      );
+    }
+
+    if (type === "end") {
+      end = line as unknown as EndLine;
+      continue;
+    }
+
+    if (typeof type !== "string" || !allowedDataTypes.has(type)) {
+      throw new SyncProtocolError(
+        `Type de ligne inattendu dans ce flux : ${JSON.stringify(type)} (ligne ${lineNumber})`
+      );
+    }
+
+    // Le champ `type` discriminant ne fait pas partie du DTO : on le retire.
+    const { type: _discriminant, ...record } = line;
+
+    switch (type) {
       case "content":
-        assertMetaSeen(meta, lineNumber);
-        if (content !== undefined) {
+        if (parsed.content !== undefined) {
           throw new SyncProtocolError('Deux lignes "content" dans le flux');
         }
-        content = (parsed as unknown as ContentLine).entries ?? {};
-        dataLines++;
+        parsed.content =
+          ((record as { entries?: Record<string, string> | null }).entries ??
+          {}) as Record<string, string>;
         break;
-
       case "catalogue":
-        assertMetaSeen(meta, lineNumber);
-        catalogues.push(record as unknown as SyncCatalogueDTO);
-        dataLines++;
+        parsed.catalogues.push(record as unknown as SyncCatalogueDTO);
         break;
-
       case "offer":
-        assertMetaSeen(meta, lineNumber);
-        offers.push(record as unknown as SyncOfferDTO);
-        dataLines++;
+        parsed.offers.push(record as unknown as SyncOfferDTO);
         break;
-
       case "event":
-        assertMetaSeen(meta, lineNumber);
-        events.push(record as unknown as SyncEventDTO);
-        dataLines++;
+        parsed.events.push(record as unknown as SyncEventDTO);
         break;
-
-      case "end":
-        assertMetaSeen(meta, lineNumber);
-        end = parsed as unknown as EndLine;
-        break;
-
-      default:
-        throw new SyncProtocolError(
-          `Type de ligne NDJSON inconnu : ${JSON.stringify(parsed.type)} (ligne ${lineNumber})`
-        );
     }
+    parsed.dataLines++;
   }
 
   if (!meta) {
     throw new SyncProtocolError('Flux de synchronisation vide ou sans ligne "meta"');
-  }
-  if (content === undefined) {
-    throw new SyncProtocolError('Flux de synchronisation sans ligne "content"');
   }
   if (!end) {
     throw new SyncProtocolError(
@@ -187,35 +207,75 @@ export async function parseSync(
     );
   }
 
+  parsed.generatedAt = meta.generatedAt;
+  parsed.version = end.version;
+  parsed.records = end.records;
+
   const mismatches: string[] = [];
-  const expect = (domain: string, expected: number, actual: number) => {
-    if (expected !== actual) {
+  for (const [domain, expected] of Object.entries(meta.counts)) {
+    const actual = domainCount(domain, parsed);
+    if (actual !== expected) {
       mismatches.push(`${domain} attendu ${expected}, reçu ${actual}`);
     }
-  };
-  expect("catalogues", meta.counts.catalogues, catalogues.length);
-  expect("offers", meta.counts.offers, offers.length);
-  expect("events", meta.counts.events, events.length);
-  expect("content", meta.counts.content, 1);
-  expect("records", end.records, dataLines);
+  }
+  if (end.records !== parsed.dataLines) {
+    mismatches.push(
+      `records attendu ${end.records}, reçu ${parsed.dataLines}`
+    );
+  }
   if (mismatches.length) {
     throw new SyncProtocolError(
       `Flux de synchronisation incohérent (corps probablement tronqué) : ${mismatches.join(" ; ")}`
     );
   }
 
+  return parsed;
+}
+
+const MAIN_DATA_TYPES: ReadonlySet<string> = new Set(["catalogue", "offer"]);
+const OTHERS_DATA_TYPES: ReadonlySet<string> = new Set(["content", "event"]);
+
+/** Assemble un `SyncMainSnapshot` à partir des lignes du flux `sync/main`. */
+export async function parseSyncMain(
+  lines: AsyncIterable<string>
+): Promise<SyncMainSnapshot> {
+  const parsed = await parseStream(lines, MAIN_DATA_TYPES);
   return {
-    version: end.version,
-    generatedAt: meta.generatedAt,
-    content,
-    catalogues,
-    offers,
-    events,
-    records: dataLines,
+    version: parsed.version,
+    generatedAt: parsed.generatedAt,
+    catalogues: parsed.catalogues,
+    offers: parsed.offers,
+    records: parsed.records,
   };
 }
 
-/** Lit et valide entièrement le flux NDJSON d'une `Response` de `GET /locale/app/v2/sync`. */
-export function parseSyncResponse(response: Response): Promise<SyncSnapshot> {
-  return parseSync(streamLines(readResponseChunks(response)));
+/** Assemble un `SyncOthersSnapshot` à partir des lignes du flux `sync/others`. */
+export async function parseSyncOthers(
+  lines: AsyncIterable<string>
+): Promise<SyncOthersSnapshot> {
+  const parsed = await parseStream(lines, OTHERS_DATA_TYPES);
+  if (parsed.content === undefined) {
+    throw new SyncProtocolError('Flux "sync/others" sans ligne "content"');
+  }
+  return {
+    version: parsed.version,
+    generatedAt: parsed.generatedAt,
+    content: parsed.content,
+    events: parsed.events,
+    records: parsed.records,
+  };
+}
+
+/** Lit et valide entièrement le flux `GET /locale/app/v2/sync/main` d'une `Response`. */
+export function parseSyncMainResponse(
+  response: Response
+): Promise<SyncMainSnapshot> {
+  return parseSyncMain(streamLines(readResponseChunks(response)));
+}
+
+/** Lit et valide entièrement le flux `GET /locale/app/v2/sync/others` d'une `Response`. */
+export function parseSyncOthersResponse(
+  response: Response
+): Promise<SyncOthersSnapshot> {
+  return parseSyncOthers(streamLines(readResponseChunks(response)));
 }

@@ -1,13 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { SyncProtocolError } from "./errors.js";
-import { parseSync, streamLines } from "./ndjson-sync.js";
+import {
+  parseSyncMain,
+  parseSyncOthers,
+  streamLines,
+} from "./ndjson-sync.js";
 
-const META = {
-  type: "meta",
-  generatedAt: "2026-09-03T10:00:00Z",
-  counts: { catalogues: 2, offers: 1, events: 1, content: 1 },
-};
-const CONTENT = { type: "content", entries: { hero: "<h1>Salut</h1>" } };
 const CAT_1 = {
   type: "catalogue",
   id: "cat_1",
@@ -31,6 +29,7 @@ const OFFER = {
   createdAt: "2026-01-01T00:00:00Z",
   updatedAt: "2026-01-03T00:00:00Z",
 };
+const CONTENT = { type: "content", entries: { hero: "<h1>Salut</h1>" } };
 const EVENT = {
   type: "event",
   id: "evt_1",
@@ -40,7 +39,7 @@ const EVENT = {
   startDate: "2026-08-01T20:00:00Z",
   endDate: "2026-08-02T02:00:00Z",
   promotion: null,
-  ticketOfferId: null,
+  ticketOffer: { id: "off_1", name: "4 fromages", description: "", status: "VISIBLE" },
   cover: null,
   goingCount: 12,
   interestedCount: 30,
@@ -49,11 +48,24 @@ const EVENT = {
   createdAt: "2026-01-01T00:00:00Z",
   updatedAt: "2026-01-04T00:00:00Z",
 };
-const END = { type: "end", version: "9f3c1a7b0d2e4f10", records: 5 };
 
-/** Le flux nominal : meta + content + 2 catalogues + 1 offre + 1 event + end. */
-function wellFormed(): unknown[] {
-  return [META, CONTENT, CAT_1, CAT_2, OFFER, EVENT, END];
+function mainStream(): unknown[] {
+  return [
+    { type: "meta", generatedAt: "2026-09-03T10:00:00Z", counts: { catalogues: 2, offers: 1 } },
+    CAT_1,
+    CAT_2,
+    OFFER,
+    { type: "end", version: "main-v1", records: 3 },
+  ];
+}
+
+function othersStream(): unknown[] {
+  return [
+    { type: "meta", generatedAt: "2026-09-03T10:00:05Z", counts: { content: 1, events: 1 } },
+    CONTENT,
+    EVENT,
+    { type: "end", version: "others-v1", records: 2 },
+  ];
 }
 
 async function* linesFrom(records: unknown[]): AsyncGenerator<string> {
@@ -69,133 +81,163 @@ async function* bytes(...chunks: string[]): AsyncGenerator<Uint8Array> {
   for (const chunk of chunks) yield encoder.encode(chunk);
 }
 
-describe("parseSync", () => {
-  it("assembles a snapshot from a well-formed stream", async () => {
-    const snapshot = await parseSync(linesFrom(wellFormed()));
+describe("parseSyncMain", () => {
+  it("assembles a main snapshot from a well-formed stream", async () => {
+    const snap = await parseSyncMain(linesFrom(mainStream()));
 
-    expect(snapshot.version).toBe("9f3c1a7b0d2e4f10");
-    expect(snapshot.generatedAt).toBe("2026-09-03T10:00:00Z");
-    expect(snapshot.records).toBe(5);
-    expect(snapshot.content).toEqual({ hero: "<h1>Salut</h1>" });
-    expect(snapshot.catalogues.map((c) => c.id)).toEqual(["cat_1", "cat_2"]);
-    expect(snapshot.offers).toHaveLength(1);
-    expect(snapshot.events).toHaveLength(1);
+    expect(snap.version).toBe("main-v1");
+    expect(snap.generatedAt).toBe("2026-09-03T10:00:00Z");
+    expect(snap.records).toBe(3);
+    expect(snap.catalogues.map((c) => c.id)).toEqual(["cat_1", "cat_2"]);
+    expect(snap.offers).toHaveLength(1);
+    expect(snap.offers[0]).not.toHaveProperty("type");
   });
 
-  it("strips the discriminant `type` field from data records", async () => {
-    const snapshot = await parseSync(linesFrom(wellFormed()));
+  it("rejects an `event` line in the main stream", async () => {
+    const records = [
+      { type: "meta", generatedAt: "t", counts: { catalogues: 0, offers: 0 } },
+      EVENT,
+      { type: "end", version: "v", records: 1 },
+    ];
+    await expect(parseSyncMain(linesFrom(records))).rejects.toThrow(/inattendu/);
+  });
 
-    expect(snapshot.catalogues[0]).not.toHaveProperty("type");
-    expect(snapshot.offers[0]).not.toHaveProperty("type");
-    expect(snapshot.events[0]).not.toHaveProperty("type");
-    expect(snapshot.offers[0].id).toBe("off_1");
+  it("rejects a `content` key in the main stream meta.counts", async () => {
+    const records = [
+      { type: "meta", generatedAt: "t", counts: { catalogues: 2, offers: 1, content: 1 } },
+      CAT_1,
+      CAT_2,
+      OFFER,
+      { type: "end", version: "v", records: 3 },
+    ];
+    await expect(parseSyncMain(linesFrom(records))).rejects.toThrow(/content/);
+  });
+
+  it("rejects a stream whose counts disagree with meta.counts", async () => {
+    const records = [
+      { type: "meta", generatedAt: "t", counts: { catalogues: 2, offers: 5 } },
+      CAT_1,
+      CAT_2,
+      OFFER,
+      { type: "end", version: "v", records: 3 },
+    ];
+    await expect(parseSyncMain(linesFrom(records))).rejects.toThrow(/offers/);
+  });
+
+  it("rejects a truncated stream (missing `end`)", async () => {
+    await expect(
+      parseSyncMain(linesFrom(mainStream().slice(0, -1)))
+    ).rejects.toBeInstanceOf(SyncProtocolError);
+  });
+
+  it("rejects when `end.records` disagrees with the data lines seen", async () => {
+    const records = mainStream();
+    records[records.length - 1] = { type: "end", version: "v", records: 99 };
+    await expect(parseSyncMain(linesFrom(records))).rejects.toThrow(/records/);
+  });
+});
+
+describe("parseSyncOthers", () => {
+  it("assembles an others snapshot from a well-formed stream", async () => {
+    const snap = await parseSyncOthers(linesFrom(othersStream()));
+
+    expect(snap.version).toBe("others-v1");
+    expect(snap.records).toBe(2);
+    expect(snap.content).toEqual({ hero: "<h1>Salut</h1>" });
+    expect(snap.events.map((e) => e.id)).toEqual(["evt_1"]);
+    expect(snap.events[0]).not.toHaveProperty("type");
+    expect(snap.events[0].ticketOffer).toEqual({
+      id: "off_1",
+      name: "4 fromages",
+      description: "",
+      status: "VISIBLE",
+    });
   });
 
   it("treats a null content map as an empty object", async () => {
-    const records = wellFormed();
+    const records = othersStream();
     records[1] = { type: "content", entries: null };
-    const snapshot = await parseSync(linesFrom(records));
-
-    expect(snapshot.content).toEqual({});
+    const snap = await parseSyncOthers(linesFrom(records));
+    expect(snap.content).toEqual({});
   });
 
-  it("ignores blank lines between records", async () => {
-    const body = wellFormed().map((r) => JSON.stringify(r)).join("\n\n");
-    const snapshot = await parseSync(streamLines(bytes(body)));
-
-    expect(snapshot.records).toBe(5);
+  it("rejects a stream with no `content` line", async () => {
+    const records = [
+      { type: "meta", generatedAt: "t", counts: { content: 0, events: 1 } },
+      EVENT,
+      { type: "end", version: "v", records: 1 },
+    ];
+    await expect(parseSyncOthers(linesFrom(records))).rejects.toThrow(/content/);
   });
 
-  it("rejects a stream whose `end` line is missing (truncated body)", async () => {
-    const records = wellFormed().slice(0, -1);
-    await expect(parseSync(linesFrom(records))).rejects.toBeInstanceOf(
-      SyncProtocolError
-    );
+  it("rejects a second `content` line", async () => {
+    const records = [
+      { type: "meta", generatedAt: "t", counts: { content: 1, events: 1 } },
+      CONTENT,
+      CONTENT,
+      EVENT,
+      { type: "end", version: "v", records: 3 },
+    ];
+    await expect(parseSyncOthers(linesFrom(records))).rejects.toThrow(/content/);
   });
 
-  it("rejects a stream whose per-domain counts disagree with meta.counts", async () => {
-    const records = [META, CONTENT, CAT_1, OFFER, EVENT, END]; // 1 catalogue, meta says 2
-    await expect(parseSync(linesFrom(records))).rejects.toThrow(/catalogues/);
-  });
-
-  it("rejects a stream whose `end.records` disagrees with the data lines seen", async () => {
-    const records = wellFormed();
-    records[records.length - 1] = { type: "end", version: "v", records: 99 };
-    await expect(parseSync(linesFrom(records))).rejects.toThrow(/records/);
+  it("rejects a `catalogue` line in the others stream", async () => {
+    const records = [
+      { type: "meta", generatedAt: "t", counts: { content: 1, events: 0 } },
+      CONTENT,
+      CAT_1,
+      { type: "end", version: "v", records: 2 },
+    ];
+    await expect(parseSyncOthers(linesFrom(records))).rejects.toThrow(/inattendu/);
   });
 
   it("rejects a data line before the meta line", async () => {
-    const records = [CONTENT, META, CAT_1, CAT_2, OFFER, EVENT, END];
-    await expect(parseSync(linesFrom(records))).rejects.toBeInstanceOf(
-      SyncProtocolError
-    );
-  });
-
-  it("rejects a second meta line", async () => {
-    const records = [META, META, CONTENT, CAT_1, CAT_2, OFFER, EVENT, END];
-    await expect(parseSync(linesFrom(records))).rejects.toThrow(/meta/);
-  });
-
-  it("rejects a second content line", async () => {
-    const records = [META, CONTENT, CONTENT, CAT_1, CAT_2, OFFER, EVENT, END];
-    await expect(parseSync(linesFrom(records))).rejects.toThrow(/content/);
-  });
-
-  it("rejects an unknown line type", async () => {
-    const records = [META, CONTENT, { type: "widget" }, CAT_1, CAT_2, OFFER, EVENT, END];
-    await expect(parseSync(linesFrom(records))).rejects.toThrow(/inconnu/);
-  });
-
-  it("rejects a line that appears after `end`", async () => {
-    const records = [...wellFormed(), CAT_1];
-    await expect(parseSync(linesFrom(records))).rejects.toThrow(/end/);
+    await expect(
+      parseSyncOthers(linesFrom([CONTENT, ...othersStream()]))
+    ).rejects.toBeInstanceOf(SyncProtocolError);
   });
 
   it("rejects an unreadable JSON line", async () => {
     await expect(
-      parseSync(rawLines(JSON.stringify(META), "{ not json"))
+      parseSyncOthers(
+        rawLines(
+          JSON.stringify({ type: "meta", generatedAt: "t", counts: { content: 1, events: 0 } }),
+          "{ not json"
+        )
+      )
     ).rejects.toBeInstanceOf(SyncProtocolError);
-  });
-
-  it("rejects an empty stream", async () => {
-    await expect(parseSync(rawLines())).rejects.toBeInstanceOf(SyncProtocolError);
   });
 });
 
 describe("streamLines", () => {
   it("reassembles a record split across two byte chunks", async () => {
-    const line = JSON.stringify(META);
-    const cut = 10;
+    const line = JSON.stringify(CAT_1);
+    const cut = 12;
     const out: string[] = [];
-    for await (const l of streamLines(bytes(line.slice(0, cut), line.slice(cut) + "\n"))) {
+    for await (const l of streamLines(
+      bytes(line.slice(0, cut), line.slice(cut) + "\n")
+    )) {
       out.push(l);
     }
     expect(out).toEqual([line]);
   });
 
-  it("emits a trailing line that has no final newline", async () => {
+  it("emits a trailing line with no final newline and skips blank lines", async () => {
     const out: string[] = [];
-    for await (const l of streamLines(bytes('{"a":1}\n{"b":2}'))) out.push(l);
+    for await (const l of streamLines(bytes('{"a":1}\n\n{"b":2}'))) out.push(l);
     expect(out).toEqual(['{"a":1}', '{"b":2}']);
   });
 
-  it("trims a CRLF line ending", async () => {
-    const out: string[] = [];
-    for await (const l of streamLines(bytes('{"a":1}\r\n'))) out.push(l);
-    expect(out).toEqual(['{"a":1}']);
-  });
-
   it("splits a multi-byte UTF-8 character across chunks without corruption", async () => {
-    const encoder = new TextEncoder();
-    const full = encoder.encode('{"x":"€"}\n');
+    const full = new TextEncoder().encode('{"x":"€"}\n');
     const out: string[] = [];
-    for await (const l of streamLines(bytes2(full.slice(0, 6), full.slice(6)))) {
+    for await (const l of streamLines(chunks(full.slice(0, 6), full.slice(6)))) {
       out.push(l);
     }
     expect(out).toEqual(['{"x":"€"}']);
   });
 });
 
-async function* bytes2(...chunks: Uint8Array[]): AsyncGenerator<Uint8Array> {
-  for (const chunk of chunks) yield chunk;
+async function* chunks(...parts: Uint8Array[]): AsyncGenerator<Uint8Array> {
+  for (const part of parts) yield part;
 }

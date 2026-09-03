@@ -1,30 +1,42 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { YodooClient } from "./client.js";
 import { SyncStore } from "./sync-store.js";
-import type { SyncSnapshot } from "./types.js";
+import type {
+  SyncMainSnapshot,
+  SyncOthersSnapshot,
+  SyncSnapshot,
+} from "./types.js";
 
-function snapshot(version: string): SyncSnapshot {
+function mainSnapshot(version: string): SyncMainSnapshot {
   return {
     version,
     generatedAt: "2026-09-03T10:00:00Z",
-    content: {},
     catalogues: [],
     offers: [],
+    records: 0,
+  };
+}
+
+function othersSnapshot(version: string): SyncOthersSnapshot {
+  return {
+    version,
+    generatedAt: "2026-09-03T10:00:05Z",
+    content: {},
     events: [],
     records: 1,
   };
 }
 
-function storeOf(version: string): SyncStore {
-  return new SyncStore(snapshot(version));
+function snapshot(main: string, others: string): SyncSnapshot {
+  return { main: mainSnapshot(main), others: othersSnapshot(others) };
+}
+
+function storeOf(main: string, others: string): SyncStore {
+  return new SyncStore(snapshot(main, others));
 }
 
 function newClient(options?: { autoSync?: boolean }): YodooClient {
-  return new YodooClient({
-    appId: "app",
-    appSecret: "secret",
-    ...options,
-  });
+  return new YodooClient({ appId: "app", appSecret: "secret", ...options });
 }
 
 afterEach(() => {
@@ -35,21 +47,21 @@ describe("YodooClient.getStore", () => {
   it("triggers sync() once and memoizes the result", async () => {
     const sync = vi
       .spyOn(YodooClient.prototype, "sync")
-      .mockResolvedValue(storeOf("v1"));
+      .mockResolvedValue(storeOf("m1", "o1"));
     const client = newClient();
 
     const a = await client.getStore();
     const b = await client.getStore();
 
     expect(a).toBe(b);
-    expect(a.version).toBe("v1");
+    expect(a.version).toEqual({ main: "m1", others: "o1" });
     expect(sync).toHaveBeenCalledTimes(1);
   });
 
   it("shares a single in-flight sync across concurrent callers", async () => {
     const sync = vi
       .spyOn(YodooClient.prototype, "sync")
-      .mockResolvedValue(storeOf("v1"));
+      .mockResolvedValue(storeOf("m1", "o1"));
     const client = newClient();
 
     const [a, b] = await Promise.all([client.getStore(), client.getStore()]);
@@ -62,39 +74,37 @@ describe("YodooClient.getStore", () => {
     const sync = vi
       .spyOn(YodooClient.prototype, "sync")
       .mockRejectedValueOnce(new Error("stream broke"))
-      .mockResolvedValueOnce(storeOf("v2"));
+      .mockResolvedValueOnce(storeOf("m2", "o2"));
     const client = newClient();
 
     await expect(client.getStore()).rejects.toThrow("stream broke");
     const store = await client.getStore();
 
-    expect(store.version).toBe("v2");
+    expect(store.version).toEqual({ main: "m2", others: "o2" });
     expect(sync).toHaveBeenCalledTimes(2);
   });
 });
 
 describe("YodooClient.refreshStore", () => {
-  it("re-syncs with the current version and replaces the memoized store", async () => {
+  it("re-syncs both streams with the current versions and replaces the memoized store", async () => {
     const sync = vi
       .spyOn(YodooClient.prototype, "sync")
-      .mockResolvedValueOnce(storeOf("v1"))
-      .mockResolvedValueOnce(storeOf("v2"));
+      .mockResolvedValueOnce(storeOf("m1", "o1"))
+      .mockResolvedValueOnce(storeOf("m2", "o2"));
     const client = newClient();
 
-    const first = await client.getStore();
-    expect(first.version).toBe("v1");
-
+    await client.getStore();
     const refreshed = await client.refreshStore();
-    expect(refreshed.version).toBe("v2");
-    expect(await client.getStore()).toBe(refreshed);
 
+    expect(refreshed.version).toEqual({ main: "m2", others: "o2" });
+    expect(await client.getStore()).toBe(refreshed);
     expect(sync).toHaveBeenNthCalledWith(1);
-    expect(sync).toHaveBeenNthCalledWith(2, "v1");
+    expect(sync).toHaveBeenNthCalledWith(2, { main: "m1", others: "o1" });
   });
 
   it("keeps the previous store when the refresh sync fails", async () => {
     vi.spyOn(YodooClient.prototype, "sync")
-      .mockResolvedValueOnce(storeOf("v1"))
+      .mockResolvedValueOnce(storeOf("m1", "o1"))
       .mockRejectedValueOnce(new Error("429"));
     const client = newClient();
 
@@ -104,16 +114,35 @@ describe("YodooClient.refreshStore", () => {
     expect(await client.getStore()).toBe(first);
   });
 
-  it("syncs from scratch when called before any getStore()", async () => {
-    const sync = vi
-      .spyOn(YodooClient.prototype, "sync")
-      .mockResolvedValue(storeOf("v1"));
+  it('with scope "main" re-downloads only that stream and swaps its half', async () => {
+    vi.spyOn(YodooClient.prototype, "sync").mockResolvedValue(
+      storeOf("m1", "o1")
+    );
+    const syncMain = vi
+      .spyOn(YodooClient.prototype, "syncMain")
+      .mockResolvedValue(mainSnapshot("m2"));
+    const syncOthers = vi.spyOn(YodooClient.prototype, "syncOthers");
     const client = newClient();
 
-    await client.refreshStore();
+    await client.getStore();
+    const refreshed = await client.refreshStore("main");
+
+    expect(refreshed.version).toEqual({ main: "m2", others: "o1" });
+    expect(syncMain).toHaveBeenCalledTimes(1);
+    expect(syncOthers).not.toHaveBeenCalled();
+  });
+
+  it("falls back to a full sync when scoped but no store exists yet", async () => {
+    const sync = vi
+      .spyOn(YodooClient.prototype, "sync")
+      .mockResolvedValue(storeOf("m1", "o1"));
+    const syncOthers = vi.spyOn(YodooClient.prototype, "syncOthers");
+    const client = newClient();
+
+    await client.refreshStore("others");
 
     expect(sync).toHaveBeenCalledTimes(1);
-    expect(sync).toHaveBeenCalledWith(undefined);
+    expect(syncOthers).not.toHaveBeenCalled();
   });
 });
 
@@ -121,20 +150,20 @@ describe("YodooClient autoSync option", () => {
   it("kicks off sync() from the constructor without being awaited", async () => {
     const sync = vi
       .spyOn(YodooClient.prototype, "sync")
-      .mockResolvedValue(storeOf("v1"));
+      .mockResolvedValue(storeOf("m1", "o1"));
 
     const client = newClient({ autoSync: true });
-    expect(sync).toHaveBeenCalledTimes(1); // already fired, synchronously, at construction
+    expect(sync).toHaveBeenCalledTimes(1);
 
     const store = await client.getStore();
-    expect(store.version).toBe("v1");
-    expect(sync).toHaveBeenCalledTimes(1); // getStore() reused the in-flight sync
+    expect(store.version).toEqual({ main: "m1", others: "o1" });
+    expect(sync).toHaveBeenCalledTimes(1);
   });
 
   it("does not touch the network when left off", () => {
     const sync = vi
       .spyOn(YodooClient.prototype, "sync")
-      .mockResolvedValue(storeOf("v1"));
+      .mockResolvedValue(storeOf("m1", "o1"));
 
     newClient();
 
@@ -147,7 +176,6 @@ describe("YodooClient autoSync option", () => {
     );
 
     const client = newClient({ autoSync: true });
-    // Laisse tourner les microtasks du fire-and-forget : ne doit pas rejeter le process.
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     await expect(client.getStore()).rejects.toThrow("initial sync failed");

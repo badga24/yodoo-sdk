@@ -1,38 +1,46 @@
 import type {
   SyncCatalogueDTO,
   SyncEventDTO,
+  SyncMainSnapshot,
   SyncOfferDTO,
+  SyncOthersSnapshot,
   SyncSnapshot,
 } from "./types.js";
 
+/** Par-flux : `true` si le flux correspondant n'a pas changé depuis la `version` fournie. */
+export interface SyncUnchanged {
+  main: boolean;
+  others: boolean;
+}
+
 export interface SyncStoreOptions {
   /**
-   * Renseigné par `YodooClient.sync(previousVersion)` : `true` si le digest du flux reçu est
-   * identique à `previousVersion` (rien n'a changé côté commerce depuis la dernière sync).
+   * Renseigné par `YodooClient.sync()` / `refreshStore()` : pour chaque flux, `true` si le
+   * digest reçu est identique à celui passé en `previousVersion`. Défaut : `{ main: false,
+   * others: false }`.
    */
-  unchanged?: boolean;
+  unchanged?: Partial<SyncUnchanged>;
 }
 
 /**
- * Vue indexée d'un `SyncSnapshot` : lookup par id des catalogues / offres / événements du
- * commerce, résolus **en mémoire, sans appel réseau**. Retourné par `YodooClient.sync()`.
+ * Vue indexée d'un `SyncSnapshot` (les deux moitiés `sync/main` + `sync/others`) : lookup par
+ * id des catalogues / offres / événements du commerce, résolus **en mémoire, sans appel
+ * réseau**. Retourné par `YodooClient.sync()` / `getStore()`.
  *
- * Le contenu se limite à ce que porte le flux `GET /locale/app/v2/sync` : offres
- * **`VISIBLE` uniquement** (donc pas de champ `status`), prix et fichiers inline, contenu du
- * site vitrine. Pas de profil commerce (`getProvider()` reste un appel API), pas de
- * top-offres (`getTopOffers()`), détail événement réduit (`ticketOfferId` brut, pas de
- * `posts`). Un id absent du snapshot renvoie `undefined` — jamais de repli silencieux sur
- * l'API.
+ * Le contenu se limite à ce que portent les flux : offres **`VISIBLE` uniquement** (donc pas
+ * de champ `status`), prix et fichiers inline, contenu du site vitrine, événements avec
+ * `promotion` et `ticketOffer` résolus inline. Pas de profil commerce (`getProvider()` reste
+ * un appel API), pas de top-offres (`getTopOffers()`), pas de `posts` d'événement. Un id
+ * absent du snapshot renvoie `undefined` — jamais de repli silencieux sur l'API.
  *
- * Snapshot **figé** : l'instance ne se rafraîchit pas seule. Re-synchroniser = rappeler
- * `client.sync(store.version)` et repartir du store renvoyé (ou garder l'ancien tant que
- * `store.unchanged` est `true`).
+ * Snapshot **figé** : l'instance ne se rafraîchit pas seule. Re-synchroniser (les deux flux
+ * ou un seul) = `client.refreshStore()` / `refreshStore("main" | "others")`.
  */
 export class SyncStore {
   /** Le snapshot brut (POJO sérialisable) dont ce store est la vue indexée. */
   readonly snapshot: SyncSnapshot;
-  /** `true` si ce store vient d'un `sync(previousVersion)` dont le digest correspondait. */
-  readonly unchanged: boolean;
+  /** Par flux, `true` si rien n'a changé depuis la `version` passée au dernier (re)sync de ce flux. */
+  readonly unchanged: SyncUnchanged;
 
   private readonly cataloguesById: Map<string, SyncCatalogueDTO>;
   private readonly offersById: Map<string, SyncOfferDTO>;
@@ -40,38 +48,46 @@ export class SyncStore {
 
   constructor(snapshot: SyncSnapshot, options: SyncStoreOptions = {}) {
     this.snapshot = snapshot;
-    this.unchanged = options.unchanged ?? false;
-    this.cataloguesById = new Map(snapshot.catalogues.map((c) => [c.id, c]));
-    this.offersById = new Map(snapshot.offers.map((o) => [o.id, o]));
-    this.eventsById = new Map(snapshot.events.map((e) => [e.id, e]));
+    this.unchanged = {
+      main: options.unchanged?.main ?? false,
+      others: options.unchanged?.others ?? false,
+    };
+    this.cataloguesById = new Map(
+      snapshot.main.catalogues.map((c) => [c.id, c])
+    );
+    this.offersById = new Map(snapshot.main.offers.map((o) => [o.id, o]));
+    this.eventsById = new Map(snapshot.others.events.map((e) => [e.id, e]));
   }
 
-  /** Digest opaque du snapshot — à repasser tel quel à `client.sync()` pour détecter un no-op. */
-  get version(): string {
-    return this.snapshot.version;
+  /** Digests opaques par flux — à repasser tels quels à `client.sync()` / `refreshStore()`. */
+  get version(): { main: string; others: string } {
+    return { main: this.snapshot.main.version, others: this.snapshot.others.version };
   }
 
-  /** Instant de génération du snapshot côté serveur (ISO 8601). */
-  get generatedAt(): string {
-    return this.snapshot.generatedAt;
+  /** Instant de génération de chaque flux côté serveur (ISO 8601) — deux lectures distinctes. */
+  get generatedAt(): { main: string; others: string } {
+    return {
+      main: this.snapshot.main.generatedAt,
+      others: this.snapshot.others.generatedAt,
+    };
   }
 
-  /** Contenu HTML du site vitrine (clé → HTML). Map éventuellement vide. */
+  /** Contenu HTML du site vitrine (clé → HTML), du flux `sync/others`. Map éventuellement vide. */
   get content(): Record<string, string> {
-    return this.snapshot.content;
+    return this.snapshot.others.content;
   }
 
-  /** Catalogue par publicId, ou `undefined` s'il n'est pas dans le snapshot. */
+  /** Catalogue par publicId (flux `sync/main`), ou `undefined` s'il n'est pas dans le snapshot. */
   getCatalogue(id: string): SyncCatalogueDTO | undefined {
     return this.cataloguesById.get(id);
   }
 
   /** Tous les catalogues du commerce, dans l'ordre stable du flux (copie — sûre à trier/muter). */
   listCatalogues(): SyncCatalogueDTO[] {
-    return [...this.snapshot.catalogues];
+    return [...this.snapshot.main.catalogues];
   }
 
-  /** Offre par publicId (`VISIBLE` uniquement), ou `undefined`. */
+  /** Offre par publicId (`VISIBLE` uniquement, flux `sync/main`), ou `undefined`. */
   getOffer(id: string): SyncOfferDTO | undefined {
     return this.offersById.get(id);
   }
@@ -84,11 +100,11 @@ export class SyncStore {
    * `group` — `OfferGroup` n'est pas dans le flux.
    */
   listOffers(filter?: { catalogue?: string | string[] }): SyncOfferDTO[] {
-    if (filter?.catalogue === undefined) return [...this.snapshot.offers];
+    if (filter?.catalogue === undefined) return [...this.snapshot.main.offers];
     const wanted = new Set(
       Array.isArray(filter.catalogue) ? filter.catalogue : [filter.catalogue]
     );
-    return this.snapshot.offers.filter(
+    return this.snapshot.main.offers.filter(
       (o) => o.catalogueId !== null && wanted.has(o.catalogueId)
     );
   }
@@ -98,30 +114,51 @@ export class SyncStore {
     return this.listOffers({ catalogue: catalogueId });
   }
 
-  /** Événement par publicId, ou `undefined`. */
+  /** Événement par publicId (flux `sync/others`), ou `undefined`. */
   getEvent(id: string): SyncEventDTO | undefined {
     return this.eventsById.get(id);
   }
 
   /** Tous les événements du commerce, dans l'ordre stable du flux (copie). */
   listEvents(): SyncEventDTO[] {
-    return [...this.snapshot.events];
+    return [...this.snapshot.others.events];
   }
 
   /**
-   * Offre-billet d'un événement, résolue contre les offres du snapshot. `undefined` si
-   * l'événement n'a pas de billet (`ticketOfferId: null`) ou si l'offre-billet n'est pas
-   * `VISIBLE` (donc absente du flux).
+   * Offre-billet **complète** d'un événement (prix + fichiers), résolue contre les offres de
+   * `sync/main` par `event.ticketOffer.id`. `undefined` si l'événement n'a pas de billet, ou
+   * si le billet n'est pas `VISIBLE` (donc absent de `sync/main`), ou s'il vient d'être créé
+   * et n'est pas encore dans le dernier `sync/main` téléchargé. Le nom / statut du billet
+   * restent disponibles sans jointure via `event.ticketOffer`.
    */
   resolveTicket(event: SyncEventDTO): SyncOfferDTO | undefined {
-    return event.ticketOfferId
-      ? this.offersById.get(event.ticketOfferId)
+    return event.ticketOffer
+      ? this.offersById.get(event.ticketOffer.id)
       : undefined;
   }
 
   /**
-   * Le snapshot brut, pour le persister (instance chaude, KV...) et reconstruire un
-   * `SyncStore` sans appel réseau via `new SyncStore(snapshot)`.
+   * Nouveau `SyncStore` avec la moitié `sync/main` remplacée (les événements / le contenu de
+   * `sync/others` sont conservés). Sert au rafraîchissement partiel piloté par webhook.
+   */
+  withMain(main: SyncMainSnapshot, unchanged = false): SyncStore {
+    return new SyncStore(
+      { main, others: this.snapshot.others },
+      { unchanged: { main: unchanged, others: this.unchanged.others } }
+    );
+  }
+
+  /** Nouveau `SyncStore` avec la moitié `sync/others` remplacée (le `sync/main` est conservé). */
+  withOthers(others: SyncOthersSnapshot, unchanged = false): SyncStore {
+    return new SyncStore(
+      { main: this.snapshot.main, others },
+      { unchanged: { main: this.unchanged.main, others: unchanged } }
+    );
+  }
+
+  /**
+   * Le snapshot brut (`{ main, others }`), pour le persister (instance chaude, KV...) et
+   * reconstruire un `SyncStore` sans appel réseau via `new SyncStore(snapshot)`.
    */
   toJSON(): SyncSnapshot {
     return this.snapshot;

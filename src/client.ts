@@ -3,7 +3,10 @@ import { TokenProvider } from "./token-provider.js";
 import { buildFileUrl } from "./file-url.js";
 import { BoundedFileCache, type CachedFile } from "./file-cache.js";
 import { toDomainError } from "./errors.js";
-import { parseSyncResponse } from "./ndjson-sync.js";
+import {
+  parseSyncMainResponse,
+  parseSyncOthersResponse,
+} from "./ndjson-sync.js";
 import { SyncStore } from "./sync-store.js";
 import type {
   CatalogueDetailDTO,
@@ -22,6 +25,8 @@ import type {
   PageParams,
   PayOrderByMobileMoneyParams,
   ProviderDetailDTO,
+  SyncMainSnapshot,
+  SyncOthersSnapshot,
   TopOffersDTO,
   TopOffersParams,
 } from "./types.js";
@@ -256,44 +261,63 @@ export class YodooClient {
       .then(({ value, lastModified }) => ({ content: value, lastModified }));
   }
 
-  /**
-   * GET /locale/app/v2/sync — flux NDJSON *full-replace* : contenu du site + catalogues +
-   * offres (`VISIBLE` uniquement, détail complet, prix inclus) + événements de tout le
-   * commerce, lus en une seule transaction cohérente. Remplace le fan-out `getContent` +
-   * `listCatalogues`/`getCatalogue`×N + `listOffers`(toutes pages) + `getOffer`×N pour un
-   * consommateur SSR qui reconstruit un read-model complet à froid.
-   *
-   * Renvoie un `SyncStore` : vue indexée du snapshot où `getOffer(id)` / `getCatalogue(id)` /
-   * `getEvent(id)` se résolvent en mémoire, sans nouvel appel réseau. Snapshot figé — pour
-   * rafraîchir, rappeler cette méthode.
-   *
-   * Le corps est parsé au fil de l'eau et validé : un flux tronqué (ligne `end` absente) ou
-   * dont les compteurs ne collent pas à l'en-tête `meta.counts` lève une `SyncProtocolError`
-   * — conserver alors le store précédent.
-   *
-   * `store.version` est un digest opaque : le repasser en `previousVersion` renseigne
-   * `store.unchanged` quand rien n'a changé (le flux est quand même téléchargé en entier :
-   * le backend ne répond pas en conditionnel ici).
-   *
-   * Budget : 1 build/heure/app (bucket `app-sync:{appId}`), `429` au-delà — poll conseillé
-   * 1×/heure. Pas mis en cache côté client (contrairement aux `GET` simples).
-   */
-  async sync(previousVersion?: string): Promise<SyncStore> {
-    const response = await this.http.getStream(`${V2_BASE}/sync`);
-    const snapshot = await parseSyncResponse(response);
-    return new SyncStore(snapshot, {
-      unchanged:
-        previousVersion !== undefined && previousVersion === snapshot.version,
-    });
+  /** GET /locale/app/v2/sync/main — moitié catalogues + offres visibles (voir `sync()`). */
+  syncMain(): Promise<SyncMainSnapshot> {
+    return this.http
+      .getStream(`${V2_BASE}/sync/main`)
+      .then(parseSyncMainResponse);
+  }
+
+  /** GET /locale/app/v2/sync/others — moitié contenu du site + événements (voir `sync()`). */
+  syncOthers(): Promise<SyncOthersSnapshot> {
+    return this.http
+      .getStream(`${V2_BASE}/sync/others`)
+      .then(parseSyncOthersResponse);
   }
 
   /**
-   * `SyncStore` du commerce, **mémoïsé** : le premier appel déclenche `sync()`, les suivants
-   * renvoient le même store (ou la promesse encore en vol si le flux n'est pas fini d'arriver
-   * — les appels concurrents partagent donc un seul flux). Combiné à `autoSync: true`, le sync
-   * démarre à la construction et ce `getStore()` ne fait qu'attendre son résultat.
+   * Lit **les deux flux NDJSON** `sync/main` (catalogues + offres `VISIBLE`, prix/fichiers
+   * inline) et `sync/others` (contenu du site + événements), en parallèle, et les recompose en
+   * un `SyncStore` : vue indexée où `getOffer(id)` / `getCatalogue(id)` / `getEvent(id)` se
+   * résolvent en mémoire. Remplace le fan-out `getContent` + `listCatalogues`/`getCatalogue`×N
+   * + `listOffers`(toutes pages) + `getOffer`×N pour un rendu SSR à froid.
    *
-   * Si le `sync()` échoue, la mémo est vidée : l'appel suivant relance le flux. Le store étant
+   * Chaque flux est lu au fil de l'eau et validé : un flux tronqué (ligne `end` absente) ou
+   * des compteurs incohérents avec son `meta.counts` lèvent une `SyncProtocolError` — garder
+   * alors le store précédent.
+   *
+   * `previous` porte les `version` par flux (`store.version`) : chaque flux dont le digest
+   * n'a pas bougé a `store.unchanged.main` / `.others` à `true` (le flux est quand même
+   * téléchargé — pas de conditionnel serveur).
+   *
+   * Budget : 1 build/heure/app **par flux** (`429` au-delà, indépendant), poll conseillé
+   * 1×/heure par flux. Pas mis en cache côté client.
+   */
+  async sync(previous?: {
+    main?: string;
+    others?: string;
+  }): Promise<SyncStore> {
+    const [main, others] = await Promise.all([this.syncMain(), this.syncOthers()]);
+    return new SyncStore(
+      { main, others },
+      {
+        unchanged: {
+          main: previous?.main !== undefined && previous.main === main.version,
+          others:
+            previous?.others !== undefined &&
+            previous.others === others.version,
+        },
+      }
+    );
+  }
+
+  /**
+   * `SyncStore` du commerce, **mémoïsé** : le premier appel déclenche `sync()` (les deux flux),
+   * les suivants renvoient le même store (ou la promesse encore en vol — les appels concurrents
+   * partagent donc les mêmes flux). Combiné à `autoSync: true`, le sync démarre à la
+   * construction et ce `getStore()` ne fait qu'attendre son résultat.
+   *
+   * Si le `sync()` échoue, la mémo est vidée : l'appel suivant relance les flux. Le store étant
    * un snapshot figé, utiliser `refreshStore()` pour forcer une re-synchronisation.
    */
   getStore(): Promise<SyncStore> {
@@ -308,16 +332,32 @@ export class YodooClient {
   }
 
   /**
-   * Force une re-synchronisation et remplace le store mémoïsé par le nouveau. Repasse la
-   * `version` courante en `previousVersion` : si rien n'a changé côté commerce, le store
-   * renvoyé a `unchanged === true` (le flux est quand même téléchargé — pas de conditionnel
-   * serveur). En cas d'échec, la mémo garde le store précédent et l'erreur est propagée.
+   * Force une re-synchronisation et remplace le store mémoïsé. Sans argument : les deux flux.
+   * Avec `scope`, seul ce flux est re-téléchargé et sa moitié du store remplacée (utile piloté
+   * par webhook) — nécessite un store déjà présent, sinon retombe sur un `sync()` complet.
    *
-   * Un appel = un flux : ne pas enchaîner plus d'1×/heure (budget `app-sync`, `429` au-delà).
+   * Repasse les `version` courantes en `previousVersion` (renseigne `store.unchanged`). En cas
+   * d'échec, la mémo garde le store précédent et l'erreur est propagée.
+   *
+   * Un appel = un flux (ou deux) : ne pas enchaîner plus d'1×/heure par flux (`429` au-delà).
    */
-  async refreshStore(): Promise<SyncStore> {
+  async refreshStore(scope?: "main" | "others"): Promise<SyncStore> {
     const current = await this.storePromise?.catch(() => undefined);
-    const next = await this.sync(current?.version);
+
+    let next: SyncStore;
+    if (!current || !scope) {
+      next = await this.sync(current?.version);
+    } else if (scope === "main") {
+      const main = await this.syncMain();
+      next = current.withMain(main, current.version.main === main.version);
+    } else {
+      const others = await this.syncOthers();
+      next = current.withOthers(
+        others,
+        current.version.others === others.version
+      );
+    }
+
     this.storePromise = Promise.resolve(next);
     return next;
   }

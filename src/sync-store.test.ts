@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { SyncStore } from "./sync-store.js";
 import type {
+  EventTicketDTO,
   SyncCatalogueDTO,
   SyncEventDTO,
+  SyncMainSnapshot,
   SyncOfferDTO,
+  SyncOthersSnapshot,
   SyncSnapshot,
 } from "./types.js";
 
@@ -33,7 +36,7 @@ function offer(id: string, catalogueId: string | null): SyncOfferDTO {
   };
 }
 
-function event(id: string, ticketOfferId: string | null): SyncEventDTO {
+function event(id: string, ticketOffer: EventTicketDTO | null): SyncEventDTO {
   return {
     id,
     name: id,
@@ -42,7 +45,7 @@ function event(id: string, ticketOfferId: string | null): SyncEventDTO {
     startDate: "2026-08-01T20:00:00Z",
     endDate: "2026-08-02T02:00:00Z",
     promotion: null,
-    ticketOfferId,
+    ticketOffer,
     cover: null,
     goingCount: 0,
     interestedCount: 0,
@@ -53,11 +56,14 @@ function event(id: string, ticketOfferId: string | null): SyncEventDTO {
   };
 }
 
-function snapshot(overrides: Partial<SyncSnapshot> = {}): SyncSnapshot {
+function ticket(id: string, status = "VISIBLE"): EventTicketDTO {
+  return { id, name: id, description: "", status: status as EventTicketDTO["status"] };
+}
+
+function mainSnapshot(version = "main-v1"): SyncMainSnapshot {
   return {
-    version: "9f3c1a7b0d2e4f10",
+    version,
     generatedAt: "2026-09-03T10:00:00Z",
-    content: { hero: "<h1>Salut</h1>" },
     catalogues: [catalogue("cat_1"), catalogue("cat_2")],
     offers: [
       offer("off_1", "cat_1"),
@@ -65,32 +71,48 @@ function snapshot(overrides: Partial<SyncSnapshot> = {}): SyncSnapshot {
       offer("off_3", "cat_2"),
       offer("off_orphan", null),
     ],
-    events: [event("evt_1", "off_3"), event("evt_2", null)],
-    records: 9,
-    ...overrides,
+    records: 6,
   };
 }
 
+function othersSnapshot(version = "others-v1"): SyncOthersSnapshot {
+  return {
+    version,
+    generatedAt: "2026-09-03T10:00:05Z",
+    content: { hero: "<h1>Salut</h1>" },
+    events: [event("evt_1", ticket("off_3")), event("evt_2", null)],
+    records: 3,
+  };
+}
+
+function snapshot(overrides: Partial<SyncSnapshot> = {}): SyncSnapshot {
+  return { main: mainSnapshot(), others: othersSnapshot(), ...overrides };
+}
+
 describe("SyncStore", () => {
-  it("exposes snapshot metadata", () => {
+  it("exposes per-stream metadata", () => {
     const store = new SyncStore(snapshot());
 
-    expect(store.version).toBe("9f3c1a7b0d2e4f10");
-    expect(store.generatedAt).toBe("2026-09-03T10:00:00Z");
+    expect(store.version).toEqual({ main: "main-v1", others: "others-v1" });
+    expect(store.generatedAt).toEqual({
+      main: "2026-09-03T10:00:00Z",
+      others: "2026-09-03T10:00:05Z",
+    });
     expect(store.content).toEqual({ hero: "<h1>Salut</h1>" });
-    expect(store.unchanged).toBe(false);
+    expect(store.unchanged).toEqual({ main: false, others: false });
   });
 
-  it("carries the unchanged flag from options", () => {
-    expect(new SyncStore(snapshot(), { unchanged: true }).unchanged).toBe(true);
+  it("carries a partial unchanged flag from options", () => {
+    const store = new SyncStore(snapshot(), { unchanged: { main: true } });
+    expect(store.unchanged).toEqual({ main: true, others: false });
   });
 
-  it("resolves catalogues, offers and events by id", () => {
+  it("resolves catalogues and offers from sync/main, events from sync/others", () => {
     const store = new SyncStore(snapshot());
 
     expect(store.getCatalogue("cat_2")?.name).toBe("cat_2");
     expect(store.getOffer("off_2")?.id).toBe("off_2");
-    expect(store.getEvent("evt_1")?.ticketOfferId).toBe("off_3");
+    expect(store.getEvent("evt_1")?.ticketOffer?.id).toBe("off_3");
   });
 
   it("returns undefined for an id absent from the snapshot (no API fallback)", () => {
@@ -101,49 +123,23 @@ describe("SyncStore", () => {
     expect(store.getEvent("evt_missing")).toBeUndefined();
   });
 
-  it("lists every offer when no filter is given", () => {
+  it("filters offers by a union of catalogue ids and drops orphans", () => {
     const store = new SyncStore(snapshot());
+
     expect(store.listOffers().map((o) => o.id)).toEqual([
       "off_1",
       "off_2",
       "off_3",
       "off_orphan",
     ]);
-  });
-
-  it("filters offers by a single catalogue id", () => {
-    const store = new SyncStore(snapshot());
-    expect(store.listOffers({ catalogue: "cat_1" }).map((o) => o.id)).toEqual([
-      "off_1",
-      "off_2",
-    ]);
-  });
-
-  it("filters offers by a union of catalogue ids", () => {
-    const store = new SyncStore(snapshot());
     expect(
       store.listOffers({ catalogue: ["cat_1", "cat_2"] }).map((o) => o.id)
     ).toEqual(["off_1", "off_2", "off_3"]);
-  });
-
-  it("never returns an offer without a catalogue when a filter is set", () => {
-    const store = new SyncStore(snapshot());
-    expect(store.listOffers({ catalogue: "cat_1" })).not.toContainEqual(
-      expect.objectContaining({ id: "off_orphan" })
-    );
-  });
-
-  it("returns an empty list for an unknown catalogue id, without throwing", () => {
-    const store = new SyncStore(snapshot());
+    expect(store.listCatalogueOffers("cat_1").map((o) => o.id)).toEqual([
+      "off_1",
+      "off_2",
+    ]);
     expect(store.listOffers({ catalogue: "cat_nope" })).toEqual([]);
-    expect(store.listCatalogueOffers("cat_nope")).toEqual([]);
-  });
-
-  it("listCatalogueOffers matches listOffers({ catalogue })", () => {
-    const store = new SyncStore(snapshot());
-    expect(store.listCatalogueOffers("cat_1")).toEqual(
-      store.listOffers({ catalogue: "cat_1" })
-    );
   });
 
   it("returns defensive copies from list methods", () => {
@@ -158,25 +154,60 @@ describe("SyncStore", () => {
     expect(store.listEvents()).toHaveLength(2);
   });
 
-  it("resolves an event ticket against the visible offers", () => {
+  it("resolves an event ticket to the full offer from sync/main", () => {
     const store = new SyncStore(snapshot());
     expect(store.resolveTicket(store.getEvent("evt_1")!)?.id).toBe("off_3");
   });
 
-  it("returns undefined resolving a ticket that has no id or is not visible", () => {
+  it("returns undefined resolving a ticket that is absent, or has no ticketOffer", () => {
     const store = new SyncStore(snapshot());
 
     expect(store.resolveTicket(store.getEvent("evt_2")!)).toBeUndefined();
     expect(
-      store.resolveTicket(event("evt_x", "off_hidden"))
+      store.resolveTicket(event("evt_x", ticket("off_hidden")))
     ).toBeUndefined();
+  });
+
+  it("withMain swaps only the main half and keeps others", () => {
+    const store = new SyncStore(snapshot(), { unchanged: { others: true } });
+    const nextMain: SyncMainSnapshot = {
+      ...mainSnapshot("main-v2"),
+      offers: [offer("off_99", "cat_1")],
+    };
+
+    const next = store.withMain(nextMain, false);
+
+    expect(next.version).toEqual({ main: "main-v2", others: "others-v1" });
+    expect(next.unchanged).toEqual({ main: false, others: true });
+    expect(next.getOffer("off_99")?.id).toBe("off_99");
+    expect(next.getOffer("off_1")).toBeUndefined();
+    expect(next.getEvent("evt_1")?.id).toBe("evt_1"); // others untouched
+    expect(store.getOffer("off_1")?.id).toBe("off_1"); // original unchanged
+  });
+
+  it("withOthers swaps only the others half and keeps main", () => {
+    const store = new SyncStore(snapshot());
+    const nextOthers: SyncOthersSnapshot = {
+      ...othersSnapshot("others-v2"),
+      events: [event("evt_new", null)],
+      content: { hero: "<h1>Bonjour</h1>" },
+    };
+
+    const next = store.withOthers(nextOthers, true);
+
+    expect(next.version).toEqual({ main: "main-v1", others: "others-v2" });
+    expect(next.unchanged).toEqual({ main: false, others: true });
+    expect(next.content).toEqual({ hero: "<h1>Bonjour</h1>" });
+    expect(next.getEvent("evt_new")?.id).toBe("evt_new");
+    expect(next.getEvent("evt_1")).toBeUndefined();
+    expect(next.getOffer("off_1")?.id).toBe("off_1"); // main untouched
   });
 
   it("round-trips through toJSON()", () => {
     const store = new SyncStore(snapshot());
     const rebuilt = new SyncStore(JSON.parse(JSON.stringify(store.toJSON())));
 
-    expect(rebuilt.version).toBe(store.version);
+    expect(rebuilt.version).toEqual(store.version);
     expect(rebuilt.getOffer("off_2")).toEqual(store.getOffer("off_2"));
     expect(rebuilt.listOffers({ catalogue: "cat_2" }).map((o) => o.id)).toEqual([
       "off_3",
