@@ -4,6 +4,7 @@ import { buildFileUrl } from "./file-url.js";
 import { BoundedFileCache, type CachedFile } from "./file-cache.js";
 import { toDomainError } from "./errors.js";
 import { parseSyncResponse } from "./ndjson-sync.js";
+import { SyncStore } from "./sync-store.js";
 import type {
   CatalogueDetailDTO,
   CatalogueTileDTO,
@@ -21,7 +22,6 @@ import type {
   PageParams,
   PayOrderByMobileMoneyParams,
   ProviderDetailDTO,
-  SyncResult,
   TopOffersDTO,
   TopOffersParams,
 } from "./types.js";
@@ -245,26 +245,28 @@ export class YodooClient {
    * `listCatalogues`/`getCatalogue`×N + `listOffers`(toutes pages) + `getOffer`×N pour un
    * consommateur SSR qui reconstruit un read-model complet à froid.
    *
+   * Renvoie un `SyncStore` : vue indexée du snapshot où `getOffer(id)` / `getCatalogue(id)` /
+   * `getEvent(id)` se résolvent en mémoire, sans nouvel appel réseau. Snapshot figé — pour
+   * rafraîchir, rappeler cette méthode.
+   *
    * Le corps est parsé au fil de l'eau et validé : un flux tronqué (ligne `end` absente) ou
    * dont les compteurs ne collent pas à l'en-tête `meta.counts` lève une `SyncProtocolError`
-   * — conserver alors le snapshot précédent.
+   * — conserver alors le store précédent.
    *
-   * `version` est un digest opaque : le stocker tel quel et ne reconstruire le store local
-   * que s'il a changé. Passer le `version` précédent en `previousVersion` renseigne
-   * `result.unchanged` (le flux est quand même téléchargé en entier : le backend ne répond
-   * pas en conditionnel ici).
+   * `store.version` est un digest opaque : le repasser en `previousVersion` renseigne
+   * `store.unchanged` quand rien n'a changé (le flux est quand même téléchargé en entier :
+   * le backend ne répond pas en conditionnel ici).
    *
    * Budget : 1 build/heure/app (bucket `app-sync:{appId}`), `429` au-delà — poll conseillé
    * 1×/heure. Pas mis en cache côté client (contrairement aux `GET` simples).
    */
-  async sync(previousVersion?: string): Promise<SyncResult> {
+  async sync(previousVersion?: string): Promise<SyncStore> {
     const response = await this.http.getStream(`${V2_BASE}/sync`);
     const snapshot = await parseSyncResponse(response);
-    return {
-      ...snapshot,
+    return new SyncStore(snapshot, {
       unchanged:
         previousVersion !== undefined && previousVersion === snapshot.version,
-    };
+    });
   }
 
   /** GET /locale/app/top-offers — pas d'équivalent v2, reste sur v1. */

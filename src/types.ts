@@ -464,8 +464,10 @@ export interface SyncEventDTO {
 }
 
 /**
- * Résultat de `sync()` (GET /locale/app/v2/sync, docs/apis/apps/locale.md §7, yodoo_back) —
- * l'état complet du commerce lu en une seule transaction cohérente.
+ * État complet du commerce lu par `GET /locale/app/v2/sync` (docs/apis/apps/locale.md §7,
+ * yodoo_back) en une seule transaction cohérente. POJO sérialisable — `YodooClient.sync()`
+ * en renvoie une vue indexée (`SyncStore`) ; c'est aussi ce que produit `SyncStore.toJSON()`
+ * et ce qu'attend `new SyncStore(snapshot)`.
  */
 export interface SyncSnapshot {
   /**
@@ -484,15 +486,6 @@ export interface SyncSnapshot {
   events: SyncEventDTO[];
   /** Total des lignes de données reçues (tout ce qui est entre `meta` et `end`). */
   records: number;
-}
-
-export interface SyncResult extends SyncSnapshot {
-  /**
-   * `true` si un `previousVersion` a été passé à `sync()` et qu'il est identique à `version` :
-   * le store local est déjà à jour, rien à reconstruire. Le flux a quand même été téléchargé
-   * en entier (le backend ne sait pas répondre en conditionnel sur cet endpoint).
-   */
-  unchanged: boolean;
 }
 
 // --- Commandes (POST /locale/app/v2/orders, .../pay/mobile-money — docs/apis/apps/locale.md §8, yodoo_back) ---
