@@ -8,6 +8,13 @@ import {
   parseSyncOthersResponse,
 } from "./ndjson-sync.js";
 import { SyncStore } from "./sync-store.js";
+import {
+  pageOf,
+  syncCatalogueToDetail,
+  syncCatalogueToTile,
+  syncOfferToDetail,
+  syncOfferToTile,
+} from "./store-adapter.js";
 import type {
   CatalogueDetailDTO,
   CatalogueTileDTO,
@@ -125,26 +132,59 @@ export class YodooClient {
     return this.http.get<ProviderDetailDTO>(V2_BASE);
   }
 
-  /** GET /locale/app/v2/catalogues — vraie pagination serveur. */
-  listCatalogues(params?: PageParams): Promise<PageDTO<CatalogueTileDTO>> {
+  /**
+   * GET /locale/app/v2/catalogues.
+   *
+   * **Servi depuis le `SyncStore` sans appel réseau** dès qu'un store est disponible (via
+   * `autoSync` ou un `getStore()` antérieur) : `params` n'honore alors que `page`/`size`
+   * (`sort` ignoré, `size` non plafonné). Sinon, `GET` paginé serveur.
+   */
+  async listCatalogues(
+    params?: PageParams
+  ): Promise<PageDTO<CatalogueTileDTO>> {
+    const store = await this.storeIfReady();
+    if (store) {
+      return pageOf(store.listCatalogues().map(syncCatalogueToTile), params);
+    }
     return this.http.get<PageDTO<CatalogueTileDTO>>(
       `${V2_BASE}/catalogues`,
       pageQuery(params)
     );
   }
 
-  /** GET /locale/app/v2/catalogues/{id} */
-  getCatalogue(id: string): Promise<CatalogueDetailDTO> {
+  /**
+   * GET /locale/app/v2/catalogues/{id}.
+   *
+   * **Servi depuis le `SyncStore`** si le catalogue y est ; sinon `GET` (`404` si absent du
+   * commerce). Un id inconnu du store passe par l'API — pas de repli silencieux.
+   */
+  async getCatalogue(id: string): Promise<CatalogueDetailDTO> {
+    const store = await this.storeIfReady();
+    const hit = store?.getCatalogue(id);
+    if (hit) return syncCatalogueToDetail(hit);
     return this.http.get<CatalogueDetailDTO>(
       `${V2_BASE}/catalogues/${encodeURIComponent(id)}`
     );
   }
 
-  /** GET /locale/app/v2/catalogues/{id}/offers */
-  listCatalogueOffers(
+  /**
+   * GET /locale/app/v2/catalogues/{id}/offers.
+   *
+   * **Servi depuis le `SyncStore`** si un store est disponible — ⚠️ le store ne contient que
+   * les offres **`VISIBLE`**, alors que l'endpoint renvoie tous les statuts ; un catalogue
+   * inconnu donne une page vide (pas de `404`). Sinon, `GET` serveur (tous statuts).
+   */
+  async listCatalogueOffers(
     catalogueId: string,
     params?: PageParams
   ): Promise<PageDTO<OfferTileDTO>> {
+    const store = await this.storeIfReady();
+    if (store) {
+      return pageOf(
+        store.listCatalogueOffers(catalogueId).map(syncOfferToTile),
+        params
+      );
+    }
     return this.http.get<PageDTO<OfferTileDTO>>(
       `${V2_BASE}/catalogues/${encodeURIComponent(catalogueId)}/offers`,
       pageQuery(params)
@@ -155,8 +195,22 @@ export class YodooClient {
    * GET /locale/app/v2/offers — `catalogue` et `group` sont indépendants et cumulables.
    * `catalogue` accepte un ou plusieurs publicId (union match) ; un publicId inconnu ou
    * n'appartenant pas au commerce fait échouer l'appel en 404.
+   *
+   * **Servi depuis le `SyncStore`** (offres `VISIBLE`, filtre `catalogue` appliqué) dès qu'un
+   * store est disponible et que `group` n'est **pas** utilisé — `group` (concept interne,
+   * absent du flux) force le `GET` serveur. Sur le chemin store, un `catalogue` inconnu donne
+   * une page vide (pas de `404`).
    */
-  listOffers(params?: ListOffersParams): Promise<PageDTO<OfferTileDTO>> {
+  async listOffers(
+    params?: ListOffersParams
+  ): Promise<PageDTO<OfferTileDTO>> {
+    const store = params?.group === undefined ? await this.storeIfReady() : undefined;
+    if (store) {
+      return pageOf(
+        store.listOffers({ catalogue: params?.catalogue }).map(syncOfferToTile),
+        params
+      );
+    }
     return this.http.get<PageDTO<OfferTileDTO>>(`${V2_BASE}/offers`, {
       ...pageQuery(params),
       catalogue: params?.catalogue,
@@ -168,8 +222,22 @@ export class YodooClient {
    * GET /locale/app/v2/offers/{id} — détail d'une offre, avec ses prix (une
    * page), ses images et son catalogue en un seul appel. `params` pagine
    * `prices`, pas une liste d'offres (il n'y en a qu'une, celle demandée).
+   *
+   * **Servi depuis le `SyncStore`** si l'offre y est (`VISIBLE`) : `status` vaut alors
+   * `"VISIBLE"`, `marketplaceProfile` est `null` (absent du flux), `catalogue` est reconstruit
+   * depuis les catalogues du store. Une offre absente du store (non `VISIBLE`, ou inexistante)
+   * passe par l'API.
    */
-  getOffer(id: string, params?: PageParams): Promise<OfferDetailDTO> {
+  async getOffer(id: string, params?: PageParams): Promise<OfferDetailDTO> {
+    const store = await this.storeIfReady();
+    const hit = store?.getOffer(id);
+    if (hit) {
+      return syncOfferToDetail(
+        hit,
+        hit.catalogueId ? store!.getCatalogue(hit.catalogueId) : undefined,
+        params
+      );
+    }
     return this.http.get<OfferDetailDTO>(
       `${V2_BASE}/offers/${encodeURIComponent(id)}`,
       pageQuery(params)
@@ -312,10 +380,30 @@ export class YodooClient {
   }
 
   /**
+   * Le `SyncStore` mémoïsé **s'il est déjà demandé** (via `autoSync` ou un `getStore()`
+   * antérieur) — attend qu'il soit prêt si son sync est encore en vol. `undefined` si aucun
+   * store n'a été demandé, ou si son sync a échoué (la mémo est alors vidée, un `getStore()`
+   * explicite le relancera). Sert de garde aux lectures servies par le store : ne déclenche
+   * **jamais** de sync par lui-même.
+   */
+  private async storeIfReady(): Promise<SyncStore | undefined> {
+    const pending = this.storePromise;
+    if (!pending) return undefined;
+    try {
+      return await pending;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
    * `SyncStore` du commerce, **mémoïsé** : le premier appel déclenche `sync()` (les deux flux),
    * les suivants renvoient le même store (ou la promesse encore en vol — les appels concurrents
    * partagent donc les mêmes flux). Combiné à `autoSync: true`, le sync démarre à la
    * construction et ce `getStore()` ne fait qu'attendre son résultat.
+   *
+   * Une fois un store présent, `getOffer` / `listOffers` / `getCatalogue` / `listCatalogues` /
+   * `listCatalogueOffers` s'en servent d'abord (repli API sur miss) — voir leur JSDoc.
    *
    * Si le `sync()` échoue, la mémo est vidée : l'appel suivant relance les flux. Le store étant
    * un snapshot figé, utiliser `refreshStore()` pour forcer une re-synchronisation.

@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { YodooClient } from "./client.js";
+import { HttpClient } from "./http-client.js";
 import { SyncStore } from "./sync-store.js";
 import type {
+  SyncCatalogueDTO,
   SyncMainSnapshot,
+  SyncOfferDTO,
   SyncOthersSnapshot,
   SyncSnapshot,
 } from "./types.js";
@@ -179,5 +182,160 @@ describe("YodooClient autoSync option", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     await expect(client.getStore()).rejects.toThrow("initial sync failed");
+  });
+});
+
+function catalogue(id: string): SyncCatalogueDTO {
+  return {
+    id,
+    name: id,
+    description: "",
+    cover: null,
+    offerCount: 1,
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-02T00:00:00Z",
+  };
+}
+
+function offer(id: string, catalogueId: string | null): SyncOfferDTO {
+  return {
+    id,
+    name: id,
+    description: `<p>${id}</p>`,
+    catalogueId,
+    files: [],
+    prices: [],
+    rating: { averageRating: 0, reviewCount: 0 },
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-03T00:00:00Z",
+  };
+}
+
+/** Store avec un catalogue `cat_1` et deux offres (`off_1` dans cat_1, `off_2` orpheline). */
+function populatedStore(): SyncStore {
+  return new SyncStore({
+    main: {
+      version: "m1",
+      generatedAt: "2026-09-03T10:00:00Z",
+      catalogues: [catalogue("cat_1")],
+      offers: [offer("off_1", "cat_1"), offer("off_2", null)],
+      records: 3,
+    },
+    others: othersSnapshot("o1"),
+  });
+}
+
+describe("YodooClient reads served from the store", () => {
+  function clientWithStore(): { client: YodooClient; httpGet: ReturnType<typeof vi.spyOn> } {
+    vi.spyOn(YodooClient.prototype, "sync").mockResolvedValue(populatedStore());
+    const httpGet = vi
+      .spyOn(HttpClient.prototype, "get")
+      .mockResolvedValue({ marker: "from-api" } as never);
+    return { client: newClient({ autoSync: true }), httpGet };
+  }
+
+  it("getOffer() resolves a VISIBLE offer from the store, no HTTP", async () => {
+    const { client, httpGet } = clientWithStore();
+    await client.getStore();
+
+    const detail = await client.getOffer("off_1");
+
+    expect(detail.status).toBe("VISIBLE");
+    expect(detail.marketplaceProfile).toBeNull();
+    expect(detail.catalogue).toEqual({ id: "cat_1", name: "cat_1", cover: null });
+    expect(httpGet).not.toHaveBeenCalled();
+  });
+
+  it("getOffer() falls back to HTTP when the offer is absent from the store", async () => {
+    const { client, httpGet } = clientWithStore();
+    await client.getStore();
+
+    await client.getOffer("off_missing");
+
+    expect(httpGet).toHaveBeenCalledWith(
+      "/locale/app/v2/offers/off_missing",
+      expect.anything()
+    );
+  });
+
+  it("listOffers() is served from the store and filtered by catalogue", async () => {
+    const { client, httpGet } = clientWithStore();
+    await client.getStore();
+
+    const page = await client.listOffers({ catalogue: "cat_1" });
+
+    expect(page.content.map((o) => o.id)).toEqual(["off_1"]);
+    expect(page.content[0].status).toBe("VISIBLE");
+    expect(httpGet).not.toHaveBeenCalled();
+  });
+
+  it("listOffers({ group }) always goes to HTTP (no group data in the store)", async () => {
+    const { client, httpGet } = clientWithStore();
+    await client.getStore();
+
+    await client.listOffers({ group: "grp_1" });
+
+    expect(httpGet).toHaveBeenCalledWith(
+      "/locale/app/v2/offers",
+      expect.objectContaining({ group: "grp_1" })
+    );
+  });
+
+  it("listCatalogues() and getCatalogue() are served from the store", async () => {
+    const { client, httpGet } = clientWithStore();
+    await client.getStore();
+
+    expect((await client.listCatalogues()).content.map((c) => c.id)).toEqual([
+      "cat_1",
+    ]);
+    expect((await client.getCatalogue("cat_1")).name).toBe("cat_1");
+    expect(httpGet).not.toHaveBeenCalled();
+  });
+
+  it("getCatalogue() falls back to HTTP for an unknown id", async () => {
+    const { client, httpGet } = clientWithStore();
+    await client.getStore();
+
+    await client.getCatalogue("cat_unknown");
+
+    expect(httpGet).toHaveBeenCalledWith("/locale/app/v2/catalogues/cat_unknown");
+  });
+
+  it("listCatalogueOffers() is served from the store (VISIBLE only)", async () => {
+    const { client, httpGet } = clientWithStore();
+    await client.getStore();
+
+    const page = await client.listCatalogueOffers("cat_1");
+
+    expect(page.content.map((o) => o.id)).toEqual(["off_1"]);
+    expect(httpGet).not.toHaveBeenCalled();
+  });
+
+  it("goes to HTTP when no store was ever requested", async () => {
+    const httpGet = vi
+      .spyOn(HttpClient.prototype, "get")
+      .mockResolvedValue({} as never);
+    const client = newClient(); // no autoSync, no getStore()
+
+    await client.getOffer("off_1");
+    await client.listCatalogues();
+
+    expect(httpGet).toHaveBeenCalledTimes(2);
+  });
+
+  it("goes to HTTP when the store's sync failed", async () => {
+    vi.spyOn(YodooClient.prototype, "sync").mockRejectedValue(new Error("boom"));
+    const httpGet = vi
+      .spyOn(HttpClient.prototype, "get")
+      .mockResolvedValue({} as never);
+    const client = newClient({ autoSync: true });
+    await new Promise((r) => setTimeout(r, 0));
+
+    await client.getOffer("off_1");
+
+    expect(httpGet).toHaveBeenCalledWith(
+      "/locale/app/v2/offers/off_1",
+      expect.anything()
+    );
   });
 });

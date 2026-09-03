@@ -9,12 +9,12 @@ Ce package n'est pas publié sur npm. Il s'installe directement depuis son dép�
 ## Installation
 
 ```bash
-npm install git+https://github.com/badga24/yodoo-sdk.git#v0.10.0
+npm install git+https://github.com/badga24/yodoo-sdk.git#v0.11.0
 # ou, avec SSH :
-npm install git+ssh://git@github.com/badga24/yodoo-sdk.git#v0.10.0
+npm install git+ssh://git@github.com/badga24/yodoo-sdk.git#v0.11.0
 ```
 
-Le suffixe `#v0.10.0` fige une version précise (voir les tags du dépôt) ; sans lui, `npm install`
+Le suffixe `#v0.11.0` fige une version précise (voir les tags du dépôt) ; sans lui, `npm install`
 suit la branche par défaut.
 
 `npm install` déclenche automatiquement `npm run build` (script `prepare`) : aucune étape
@@ -74,11 +74,11 @@ Le client contacte toujours `https://api.yodoo.space` — ce n'est pas configura
 | Méthode | Route | Retour |
 |---|---|---|
 | `getProvider()` | `GET /locale/app/v2` | `ProviderDetailDTO` (fusionne provider + moyens de paiement + contacts + disponibilités) |
-| `listCatalogues(params?)` | `GET /locale/app/v2/catalogues` | `PageDTO<CatalogueTileDTO>` |
-| `getCatalogue(id)` | `GET /locale/app/v2/catalogues/{id}` | `CatalogueDetailDTO` |
-| `listCatalogueOffers(catalogueId, params?)` | `GET /locale/app/v2/catalogues/{id}/offers` | `PageDTO<OfferTileDTO>` |
-| `listOffers(params?)` | `GET /locale/app/v2/offers` | `PageDTO<OfferTileDTO>` |
-| `getOffer(id, params?)` | `GET /locale/app/v2/offers/{id}` | `OfferDetailDTO` (`params` pagine `prices`, pas la liste d'offres) |
+| `listCatalogues(params?)` | store, sinon `GET /locale/app/v2/catalogues` | `PageDTO<CatalogueTileDTO>` |
+| `getCatalogue(id)` | store, sinon `GET /locale/app/v2/catalogues/{id}` | `CatalogueDetailDTO` |
+| `listCatalogueOffers(catalogueId, params?)` | store, sinon `GET /locale/app/v2/catalogues/{id}/offers` | `PageDTO<OfferTileDTO>` |
+| `listOffers(params?)` | store (sauf `group`), sinon `GET /locale/app/v2/offers` | `PageDTO<OfferTileDTO>` |
+| `getOffer(id, params?)` | store, sinon `GET /locale/app/v2/offers/{id}` | `OfferDetailDTO` (`params` pagine `prices`, pas la liste d'offres) |
 | `listEvents(params?)` | `GET /locale/app/v2/events` | `PageDTO<EventTileDTO>` (promotion résolue, ticket en id brut) |
 | `getEvent(id)` | `GET /locale/app/v2/events/{id}` | `EventDetailDTO` (promotion et ticket résolus) |
 | `sync(previous?)` | `GET /locale/app/v2/sync/main` + `.../sync/others` | `SyncStore` — vue indexée (lookup par id, en mémoire) de tout le commerce, recomposée depuis les deux flux (voir plus bas) |
@@ -183,6 +183,34 @@ le webhook à venir) — l'autre moitié du store est conservée.
 - Budget : **1 build/heure/app par flux** (429 au-delà, indépendant), poll conseillé 1×/heure
   par flux. Pas mis en cache côté client (voir plus bas).
 
+**Lecture servie par le store** — dès qu'un `SyncStore` est présent (via `autoSync` ou un
+`getStore()` antérieur), ces méthodes s'y résolvent **sans appel réseau**, avec **repli sur
+l'API** quand la donnée n'y est pas :
+
+| Méthode | Sert du store si… | Repli API si… |
+|---|---|---|
+| `getOffer(id)` | l'offre `VISIBLE` est dans le store | id absent (offre non `VISIBLE` ou inexistante) |
+| `listOffers(params)` | pas de filtre `group` | `group` fourni (concept interne, hors flux) |
+| `getCatalogue(id)` | le catalogue est dans le store | id absent |
+| `listCatalogues(params)` | toujours | store jamais demandé |
+| `listCatalogueOffers(catId, params)` | toujours | store jamais demandé |
+
+Sur ce chemin :
+
+- `getOffer()` renvoie un `OfferDetailDTO` où **`status` vaut `"VISIBLE"`**,
+  **`marketplaceProfile` est `null`** (absent du flux), et `catalogue` est reconstruit depuis
+  les catalogues du store.
+- `listCatalogueOffers()` ne renvoie que les offres **`VISIBLE`** (l'endpoint, lui, renvoie
+  tous les statuts) ; un catalogue inconnu donne une **page vide** (pas de `404`), idem pour
+  `listOffers({ catalogue })`.
+- Pagination : seuls `page`/`size` sont honorés (`sort` ignoré, l'ordre du store est stable ;
+  `size` non plafonné à 30).
+- La donnée peut être **périmée** jusqu'au prochain `refreshStore()` ; une écriture
+  (`createOrder`…) ne met pas le store à jour.
+- Aucun store demandé (ni `autoSync` ni `getStore()`) → comportement inchangé, tout passe par
+  l'API. Les lectures qui n'ont pas d'équivalent store (`getProvider`, `listEvents`/`getEvent`,
+  `getContent`, `getTopOffers`) passent toujours par l'API.
+
 **Bonnes pratiques `sync` / `SyncStore`** (contexte serverless, p. ex. Next.js sur Vercel) :
 
 - **Un seul client, en singleton de module** (`export const yodoo = new YodooClient(...)`).
@@ -206,9 +234,10 @@ le webhook à venir) — l'autre moitié du store est conservée.
   (il remplace le fan-out `getContent` + `getCatalogue`×N + `listOffers` + `getOffer`×N). Le
   surcoût à connaître : `autoSync` fait un `sync()` par cold start même pour une requête qui
   n'en a pas besoin.
-- **Lire via `store.*`, pas `client.*`**, pour éviter le réseau : `client.getOffer(id)` &
-  co. tapent toujours l'API (le store ne les court-circuite pas), et le store n'a que les
-  offres `VISIBLE`.
+- **Dès qu'un store est présent, `client.getOffer` / `listOffers` / `getCatalogue` /
+  `listCatalogues` / `listCatalogueOffers` s'y résolvent d'eux-mêmes** (repli API sur miss —
+  voir « Lecture servie par le store »). Pas besoin d'appeler `store.*` à la main ; le faire
+  reste possible si tu veux la forme `Sync*DTO` brute (sans adaptation).
 - **Après une écriture** (`createOrder`…) le store n'est pas mis à jour — `refreshStore()` si
   tu dois en voir l'effet.
 
@@ -218,7 +247,9 @@ le webhook à venir) — l'autre moitié du store est conservée.
 mémoire, pour la durée du process — clé = URL complète (query incluse), TTL fixe **1h**, non
 configurable. `getContent()` et `sync()` n'y sont pas soumis (`getContent` a son propre
 mécanisme `ifModifiedSince` ; `sync()` renvoie un `SyncStore` figé qu'on rafraîchit
-explicitement, borné par le budget serveur d'1 appel/heure par flux). `invalidateCache()` vide tout le cache d'un coup (pas d'invalidation
+explicitement, borné par le budget serveur d'1 appel/heure par flux). Une lecture **servie
+par le store** ne passe pas par ce cache non plus (elle ne fait pas de `GET`) ; c'est
+`refreshStore()` qui la rafraîchit. `invalidateCache()` vide tout le cache d'un coup (pas d'invalidation
 granulaire par clé) ; à appeler quand on sait qu'une donnée a changé côté commerce et qu'on
 ne veut pas attendre l'expiration du TTL.
 
@@ -316,3 +347,9 @@ npm run typecheck
   (v0.7.0) puis un `SyncStore` (v0.8.0), `autoSync`/`getStore()` (v0.9.0), scission en deux
   flux + `event.ticketOfferId` → `event.ticketOffer` (v0.10.0). La description ci-dessus est
   celle de la v0.10.0.)*
+- **04/09/2026** — dès qu'un `SyncStore` est présent, `getOffer` / `listOffers` (hors `group`) /
+  `getCatalogue` / `listCatalogues` / `listCatalogueOffers` se servent du store sans appel
+  réseau, avec repli sur l'API quand l'id n'y est pas. Sur ce chemin : `status: "VISIBLE"`,
+  `OfferDetailDTO.marketplaceProfile: null`, `listCatalogueOffers` limité aux offres `VISIBLE`,
+  pagination `page`/`size` seulement (`sort` ignoré). Aucun changement si aucun store n'est
+  demandé.
