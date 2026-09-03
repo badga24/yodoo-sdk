@@ -183,6 +183,35 @@ le webhook à venir) — l'autre moitié du store est conservée.
 - Budget : **1 build/heure/app par flux** (429 au-delà, indépendant), poll conseillé 1×/heure
   par flux. Pas mis en cache côté client (voir plus bas).
 
+**Bonnes pratiques `sync` / `SyncStore`** (contexte serverless, p. ex. Next.js sur Vercel) :
+
+- **Un seul client, en singleton de module** (`export const yodoo = new YodooClient(...)`).
+  Jamais `new YodooClient()` par requête : ce serait un store — et un `sync()` — par requête.
+- **`await getStore()` dans la requête qui a besoin du store**, plutôt que de compter sur le
+  fire-and-forget de `autoSync` pour finir en tâche de fond : du travail async qui survit à la
+  réponse est mal géré en serverless (gelé/tué après la réponse). `autoSync` sert seulement à
+  démarrer les flux tôt ; c'est `getStore()` qui garantit qu'ils sont prêts.
+- **N'activer `autoSync` que si la majorité des entrées rendent la vitrine.** Sinon il lance
+  un `sync()` en fond à chaque cold start pour rien — préférer `getStore()` paresseux.
+- **Rafraîchir depuis un cron unique** (`refreshStore()` 1×/h, ou `refreshStore("main" |
+  "others")` piloté par le webhook à venir), pas opportunément à chaque requête.
+- **Persistance cross-instance / cross-redémarrage (optionnelle)** : stocker `store.toJSON()`
+  dans un KV (Vercel KV, Upstash…) sous la clé `store.version.main` + `.others`, et au
+  démarrage reconstruire via `new SyncStore(snapshot)` au lieu de retélécharger les deux flux
+  — une lecture KV contre deux flux NDJSON. Le SDK ne fait pas ce câblage.
+- **Empreinte mémoire** ≈ nombre d'offres `VISIBLE` × ~quelques Ko (description HTML inline) :
+  quelques Mo pour < ~1000 offres, linéaire. À surveiller au-delà de ~10 000 offres à HTML
+  lourd.
+- **Coût** : sur une route qui rend la vitrine, le store réduit fortement la durée d'exécution
+  (il remplace le fan-out `getContent` + `getCatalogue`×N + `listOffers` + `getOffer`×N). Le
+  surcoût à connaître : `autoSync` fait un `sync()` par cold start même pour une requête qui
+  n'en a pas besoin.
+- **Lire via `store.*`, pas `client.*`**, pour éviter le réseau : `client.getOffer(id)` &
+  co. tapent toujours l'API (le store ne les court-circuite pas), et le store n'a que les
+  offres `VISIBLE`.
+- **Après une écriture** (`createOrder`…) le store n'est pas mis à jour — `refreshStore()` si
+  tu dois en voir l'effet.
+
 **Cache en mémoire** : toutes les méthodes de lecture passant par un `GET` simple
 (`getProvider`, `listCatalogues`, `getCatalogue`, `listCatalogueOffers`, `listOffers`,
 `getOffer`, `listEvents`, `getEvent`, `getTopOffers`) sont mises en cache côté client, en
