@@ -51,6 +51,15 @@ export interface YodooClientOptions {
    * en cache. Défaut : 50 Mo.
    */
   fileCacheMaxBytes?: number;
+  /**
+   * Lance un `sync()` dès la construction, **sans bloquer** (fire-and-forget). Le flux est
+   * mémoïsé : `getStore()` renvoie ce même `SyncStore` une fois arrivé, ou la promesse encore
+   * en vol si on l'appelle avant. Une erreur de ce sync initial n'est pas propagée par le
+   * constructeur — elle ressurgit au prochain `getStore()`, qui relance alors le flux. Défaut :
+   * `false`. Ne l'activer que pour une intégration qui va effectivement lire le store (pas pour
+   * un client qui ne fait que `createOrder()` par ex.).
+   */
+  autoSync?: boolean;
 }
 
 function pageQuery(params?: PageParams): QueryParams {
@@ -77,6 +86,8 @@ export class YodooClient {
   private readonly http: HttpClient;
   private readonly tokenProvider: TokenProvider;
   private readonly fileCache: BoundedFileCache;
+  /** Promesse mémoïsée du `SyncStore` — voir `getStore()` / `refreshStore()`. */
+  private storePromise?: Promise<SyncStore>;
 
   constructor(options: YodooClientOptions) {
     this.tokenProvider = new TokenProvider({
@@ -91,6 +102,13 @@ export class YodooClient {
     this.fileCache = new BoundedFileCache(
       options.fileCacheMaxBytes ?? DEFAULT_FILE_CACHE_MAX_BYTES
     );
+
+    if (options.autoSync) {
+      // Fire-and-forget : le `.catch` ici ne fait que marquer cette branche comme gérée
+      // (pas d'unhandledRejection). `getStore()` a posé sa propre gestion d'erreur qui vide
+      // la mémo, donc un échec du sync initial sera simplement retenté au prochain appel.
+      void this.getStore().catch(() => undefined);
+    }
   }
 
   /**
@@ -269,6 +287,41 @@ export class YodooClient {
     });
   }
 
+  /**
+   * `SyncStore` du commerce, **mémoïsé** : le premier appel déclenche `sync()`, les suivants
+   * renvoient le même store (ou la promesse encore en vol si le flux n'est pas fini d'arriver
+   * — les appels concurrents partagent donc un seul flux). Combiné à `autoSync: true`, le sync
+   * démarre à la construction et ce `getStore()` ne fait qu'attendre son résultat.
+   *
+   * Si le `sync()` échoue, la mémo est vidée : l'appel suivant relance le flux. Le store étant
+   * un snapshot figé, utiliser `refreshStore()` pour forcer une re-synchronisation.
+   */
+  getStore(): Promise<SyncStore> {
+    if (!this.storePromise) {
+      const pending: Promise<SyncStore> = this.sync().catch((error) => {
+        if (this.storePromise === pending) this.storePromise = undefined;
+        throw error;
+      });
+      this.storePromise = pending;
+    }
+    return this.storePromise;
+  }
+
+  /**
+   * Force une re-synchronisation et remplace le store mémoïsé par le nouveau. Repasse la
+   * `version` courante en `previousVersion` : si rien n'a changé côté commerce, le store
+   * renvoyé a `unchanged === true` (le flux est quand même téléchargé — pas de conditionnel
+   * serveur). En cas d'échec, la mémo garde le store précédent et l'erreur est propagée.
+   *
+   * Un appel = un flux : ne pas enchaîner plus d'1×/heure (budget `app-sync`, `429` au-delà).
+   */
+  async refreshStore(): Promise<SyncStore> {
+    const current = await this.storePromise?.catch(() => undefined);
+    const next = await this.sync(current?.version);
+    this.storePromise = Promise.resolve(next);
+    return next;
+  }
+
   /** GET /locale/app/top-offers — pas d'équivalent v2, reste sur v1. */
   getTopOffers(params?: TopOffersParams): Promise<TopOffersDTO> {
     return this.http.get<TopOffersDTO>(`${V1_BASE}/top-offers`, {
@@ -320,7 +373,8 @@ export class YodooClient {
   /**
    * Vide le cache en mémoire des réponses de lecture (`getProvider`, `listCatalogues`,
    * `listOffers`, etc. — TTL fixe 1h). À appeler quand on sait qu'une donnée a changé côté
-   * commerce et qu'on ne veut pas attendre l'expiration du TTL.
+   * commerce et qu'on ne veut pas attendre l'expiration du TTL. N'affecte pas le `SyncStore`
+   * mémoïsé (snapshot figé) — pour celui-là, utiliser `refreshStore()`.
    */
   invalidateCache(): void {
     this.http.invalidateCache();
