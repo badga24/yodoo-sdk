@@ -122,6 +122,30 @@ export class HttpClient {
     return this.parse<T>(response);
   }
 
+  /**
+   * POST `multipart/form-data` à un seul champ `file` — upload de photo de commande
+   * (`uploadOrderPhoto`, §8). Réponse `204 No Content` attendue : pas de `parse()` JSON.
+   */
+  async postFile(
+    path: string,
+    file: Blob | Uint8Array,
+    filename?: string,
+    contentType?: string
+  ): Promise<void> {
+    const url = this.buildUrl(path);
+    const send = () => this.fetchMultipartWithToken(url, file, filename, contentType);
+
+    let response = await send();
+    if (response.status === 401) {
+      this.tokenProvider.invalidate();
+      response = await send();
+    }
+
+    if (!response.ok) {
+      throw await toDomainError(response);
+    }
+  }
+
   private async fetchWithToken(
     url: string,
     method: "GET" | "POST",
@@ -139,6 +163,37 @@ export class HttpClient {
           : {}),
       },
       body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+  }
+
+  /**
+   * `Content-Type` volontairement absent des headers : laisser `fetch` le déduire du `FormData`
+   * (il y ajoute la boundary multipart lui-même).
+   */
+  private async fetchMultipartWithToken(
+    url: string,
+    file: Blob | Uint8Array,
+    filename?: string,
+    contentType?: string
+  ): Promise<Response> {
+    const token = await this.tokenProvider.getToken();
+    const blob =
+      file instanceof Blob
+        ? file
+        : new Blob(
+            // `Uint8Array.buffer` est typé `ArrayBufferLike` (couvre `SharedArrayBuffer`), que
+            // `BlobPart` n'accepte pas — jamais le cas en pratique ici (octets fournis par
+            // l'appelant, pas un worker), d'où l'assertion.
+            [file.buffer.slice(file.byteOffset, file.byteOffset + file.byteLength) as ArrayBuffer],
+            contentType ? { type: contentType } : undefined
+          );
+    const body = new FormData();
+    body.append("file", blob, filename ?? "file");
+
+    return fetch(url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body,
     });
   }
 

@@ -339,3 +339,89 @@ describe("YodooClient reads served from the store", () => {
     );
   });
 });
+
+describe("YodooClient.getContentEntries", () => {
+  it("passes ifModifiedSince through and surfaces content + lastModified", async () => {
+    const getConditional = vi
+      .spyOn(HttpClient.prototype, "getConditional")
+      .mockResolvedValue({
+        value: {
+          hero_image: { value: "", fileId: "file_1", offerId: null, priceId: null, catalogueId: null },
+        },
+        lastModified: "Fri, 18 Sep 2026 10:00:00 GMT",
+      } as never);
+    const client = newClient();
+
+    const result = await client.getContentEntries("Thu, 17 Sep 2026 10:00:00 GMT");
+
+    expect(getConditional).toHaveBeenCalledWith(
+      "/locale/app/v2/content/entries",
+      "Thu, 17 Sep 2026 10:00:00 GMT"
+    );
+    expect(result.content).toEqual({
+      hero_image: { value: "", fileId: "file_1", offerId: null, priceId: null, catalogueId: null },
+    });
+    expect(result.lastModified).toBe("Fri, 18 Sep 2026 10:00:00 GMT");
+  });
+
+  it("surfaces a 304 as content: null", async () => {
+    vi.spyOn(HttpClient.prototype, "getConditional").mockResolvedValue({
+      value: null,
+      lastModified: "Thu, 17 Sep 2026 10:00:00 GMT",
+    } as never);
+    const client = newClient();
+
+    const result = await client.getContentEntries("Thu, 17 Sep 2026 10:00:00 GMT");
+
+    expect(result.content).toBeNull();
+  });
+});
+
+describe("YodooClient.createOrder", () => {
+  it("posts items/offlineAuthorizationCode/note and returns the created order", async () => {
+    const post = vi.spyOn(HttpClient.prototype, "post").mockResolvedValue({
+      id: "order_1",
+      pendingPhotoUploads: [
+        { item: "item_1", price: "price_1", setting: "setting_1", files: ["file_1"] },
+      ],
+    } as never);
+    const client = newClient();
+
+    const order = await client.createOrder(
+      [{ offer: "offer_1", prices: [{ price: "price_1", finalPrice: "500", quantity: 1 }] }],
+      "code",
+      "note"
+    );
+
+    expect(post).toHaveBeenCalledWith("/locale/app/v2/orders", {
+      items: [{ offer: "offer_1", prices: [{ price: "price_1", finalPrice: "500", quantity: 1 }] }],
+      offlineAuthorizationCode: "code",
+      note: "note",
+    });
+    expect(order.pendingPhotoUploads).toEqual([
+      { item: "item_1", price: "price_1", setting: "setting_1", files: ["file_1"] },
+    ]);
+  });
+});
+
+describe("YodooClient.uploadOrderPhoto", () => {
+  it("uploads the file to the order/setting/fileId route", async () => {
+    const postFile = vi
+      .spyOn(HttpClient.prototype, "postFile")
+      .mockResolvedValue(undefined);
+    const client = newClient();
+    const bytes = new Uint8Array([1, 2, 3]);
+
+    await client.uploadOrderPhoto("order_1", "setting_1", "file_1", bytes, {
+      contentType: "image/jpeg",
+      filename: "photo.jpg",
+    });
+
+    expect(postFile).toHaveBeenCalledWith(
+      "/locale/app/v2/orders/order_1/settings/setting_1/photos/file_1/upload",
+      bytes,
+      "photo.jpg",
+      "image/jpeg"
+    );
+  });
+});
