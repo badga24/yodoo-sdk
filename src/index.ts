@@ -52,6 +52,8 @@ export type {
   PromotionDTO,
   CustomerProfileDTO,
   ContentResult,
+  ContentEntryDTO,
+  ContentEntriesResult,
   TopOfferItemDTO,
   TopOffersDTO,
   PageDTO,
@@ -66,4 +68,7 @@ export type {
   SyncMainSnapshot,
   SyncOthersSnapshot,
   SyncSnapshot,
+  CreateOrderPhotoDTO,
+  PendingPhotoUploadDTO,
+  BusinessOrderCreatedDTO,
 } from "./types.js";

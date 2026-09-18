@@ -9,12 +9,12 @@ Ce package n'est pas publié sur npm. Il s'installe directement depuis son dép�
 ## Installation
 
 ```bash
-npm install git+https://github.com/badga24/yodoo-sdk.git#v0.11.0
+npm install git+https://github.com/badga24/yodoo-sdk.git#v0.12.0
 # ou, avec SSH :
-npm install git+ssh://git@github.com/badga24/yodoo-sdk.git#v0.11.0
+npm install git+ssh://git@github.com/badga24/yodoo-sdk.git#v0.12.0
 ```
 
-Le suffixe `#v0.11.0` fige une version précise (voir les tags du dépôt) ; sans lui, `npm install`
+Le suffixe `#v0.12.0` fige une version précise (voir les tags du dépôt) ; sans lui, `npm install`
 suit la branche par défaut.
 
 `npm install` déclenche automatiquement `npm run build` (script `prepare`) : aucune étape
@@ -88,8 +88,10 @@ Le client contacte toujours `https://api.yodoo.space` — ce n'est pas configura
 | `refreshStore(scope?)` | — | `Promise<SyncStore>` — re-synchronise les deux flux (ou seulement `"main"` / `"others"`) et remplace le store mémoïsé |
 | `getTopOffers(params?)` | `GET /locale/app/top-offers` (v1, pas d'équivalent v2) | `TopOffersDTO` |
 | `getContent(ifModifiedSince?)` | `GET /locale/app/v2/content` | `ContentResult` (clé → HTML ; throttlé à 1 payload réel/heure/app, voir plus bas) |
+| `getContentEntries(ifModifiedSince?)` | `GET /locale/app/v2/content/entries` | `ContentEntriesResult` (clé → `{ value, fileId, offerId, priceId, catalogueId }` ; même quota/throttle que `getContent`, voir plus bas) |
 | `registerCustomerFromToken(token)` | `POST /locale/app/v2/customers/from-token` | `CustomerProfileDTO` |
-| `createOrder(items, offlineAuthorizationCode?, note?)` | `POST /locale/app/v2/orders` | `OrderDTO` (vente comptoir, articles nés `CLOSED`) |
+| `createOrder(items, offlineAuthorizationCode?, note?)` | `POST /locale/app/v2/orders` | `BusinessOrderCreatedDTO` (vente comptoir, articles nés `CLOSED`) |
+| `uploadOrderPhoto(orderId, settingId, fileId, file, options?)` | `POST /locale/app/v2/orders/{order}/settings/{setting}/photos/{fileId}/upload` | `void` (upload des octets d'une réponse PHOTO, voir plus bas) |
 | `payOrderByMobileMoney(orderId, params)` | `POST /locale/app/v2/orders/{order}/pay/mobile-money` | `InvoiceDTO` |
 | `getFileUrl(fileId)` | — | URL publique de streaming d'un fichier (`FileDTO.id`) |
 | `getFile(fileId)` | — | `{ bytes, contentType, cacheControl }` — télécharge le fichier, mis en cache en mémoire (voir plus bas) |
@@ -113,6 +115,15 @@ incluses respectivement dans `getProvider()` (les trois premières) et `getOffer
 `lastModified` reçu et le repasser en `ifModifiedSince` au prochain appel permet de sonder
 gratuitement les changements — un 304 renvoie `{ content: null, lastModified }` et ne
 consomme pas le quota horaire.
+
+**`getContentEntries`** : même contenu que `getContent`, mais chaque valeur est un objet
+`{ value, fileId, offerId, priceId, catalogueId }` — les quatre liens sont nullables et
+indépendants (une clé peut n'en avoir aucun, un seul, ou plusieurs). Aucun objet résolu n'est
+jamais inclus : aller chercher soi-même la ressource liée (`getFile(fileId)` pour les octets,
+`getOffer(offerId)`, `getCatalogue(catalogueId)` — `priceId` n'a pas d'endpoint de lecture
+dédié, le prix se retrouve via l'offre qui le porte). **Partage le même budget horaire et le
+même mécanisme `If-Modified-Since` que `getContent`** (même quota côté serveur) : alterner
+entre les deux endpoints ne l'augmente pas.
 
 **`sync(previous?)`** : récupère tout ce qu'un rendu SSR à froid doit reconstruire — contenu
 du site, catalogues, offres visibles (description HTML complète, prix et fichiers inline),
@@ -310,6 +321,12 @@ try {
   attribue la commande au profil auto-référentiel du commerce plutôt qu'à un client identifié
   (utile pour une intégration sans notion de client connecté, ex. commande anonyme depuis un site
   vitrine) ; passer `note` pour transmettre des coordonnées collectées côté formulaire dans ce cas.
+- Une réponse à une spécification `PriceOrderSetting` de type PHOTO (`responses[].files`, sur un
+  article de `createOrder`) ne porte que des métadonnées (`name`, `contentType`, `contentLength`,
+  `ratio`) — jamais les octets. La commande créée renvoie alors des entrées dans
+  `pendingPhotoUploads` (`{ item, price, setting, files }`, `files` = publicIds des fichiers créés
+  côté serveur) ; envoyer les octets de chacune séparément via `uploadOrderPhoto(orderId,
+  setting, fileId, file)` (`file` : `Blob` ou octets bruts `Uint8Array`/`Buffer`).
 
 ## Développement
 
@@ -353,3 +370,13 @@ npm run typecheck
   `OfferDetailDTO.marketplaceProfile: null`, `listCatalogueOffers` limité aux offres `VISIBLE`,
   pagination `page`/`size` seulement (`sort` ignoré). Aucun changement si aucun store n'est
   demandé.
+- **18/09/2026** —
+  - ajout de `getContentEntries` : même contenu que `getContent`, mais chaque valeur porte en
+    plus ses liens optionnels vers une ressource (`fileId`/`offerId`/`priceId`/`catalogueId`) ;
+    même budget horaire et même mécanisme `If-Modified-Since` que `getContent`.
+  - une réponse PHOTO (`responses[].files`) sur `createOrder` est désormais réellement prise en
+    compte côté serveur (avant cette date, silencieusement ignorée). `createOrder` renvoie
+    maintenant `BusinessOrderCreatedDTO` (remplace le `OrderDTO` v1 renvoyé jusque-là, mêmes
+    champs effectivement peuplés), avec un nouveau champ `pendingPhotoUploads`. Ajout de
+    `uploadOrderPhoto(orderId, settingId, fileId, file, options?)` pour envoyer les octets de
+    chaque entrée en attente.

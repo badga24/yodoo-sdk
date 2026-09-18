@@ -16,8 +16,11 @@ import {
   syncOfferToTile,
 } from "./store-adapter.js";
 import type {
+  BusinessOrderCreatedDTO,
   CatalogueDetailDTO,
   CatalogueTileDTO,
+  ContentEntriesResult,
+  ContentEntryDTO,
   CreateOrderItemDTO,
   CustomerProfileDTO,
   EventDetailDTO,
@@ -27,7 +30,6 @@ import type {
   ListOffersParams,
   OfferDetailDTO,
   OfferTileDTO,
-  OrderDTO,
   PageDTO,
   PageParams,
   PayOrderByMobileMoneyParams,
@@ -286,17 +288,46 @@ export class YodooClient {
    * pour une intégration sans notion de client connecté (ex. commande anonyme depuis un site
    * vitrine). Utiliser `note` pour transmettre des coordonnées collectées côté formulaire dans
    * ce cas.
+   *
+   * Une réponse `PHOTO` dans `items[].prices[].responses[].files` (métadonnées seulement) fait
+   * revenir des entrées dans `pendingPhotoUploads` : uploader ensuite les octets de chacune via
+   * `uploadOrderPhoto()`.
    */
   createOrder(
     items: CreateOrderItemDTO[],
     offlineAuthorizationCode?: string,
     note?: string
-  ): Promise<OrderDTO> {
-    return this.http.post<OrderDTO>(`${V2_BASE}/orders`, {
+  ): Promise<BusinessOrderCreatedDTO> {
+    return this.http.post<BusinessOrderCreatedDTO>(`${V2_BASE}/orders`, {
       items,
       offlineAuthorizationCode,
       note,
     });
+  }
+
+  /**
+   * POST /locale/app/v2/orders/{order}/settings/{setting}/photos/{fileId}/upload — envoie les
+   * octets d'une des entrées de `pendingPhotoUploads` renvoyées par `createOrder()`. `settingId`
+   * et `fileId` viennent de cette même entrée (`setting`, un élément de `files`) ; `order`
+   * n'accepte que les commandes de ce commerce. `file` : `Blob` (nommer via `filename` sinon) ou
+   * octets bruts (`Uint8Array`/`Buffer`, `contentType` alors recommandé — reprendre celui annoncé
+   * dans `CreateOrderPhotoDTO.contentType`).
+   */
+  uploadOrderPhoto(
+    orderId: string,
+    settingId: string,
+    fileId: string,
+    file: Blob | Uint8Array,
+    options?: { filename?: string; contentType?: string }
+  ): Promise<void> {
+    return this.http.postFile(
+      `${V2_BASE}/orders/${encodeURIComponent(orderId)}/settings/${encodeURIComponent(
+        settingId
+      )}/photos/${encodeURIComponent(fileId)}/upload`,
+      file,
+      options?.filename,
+      options?.contentType
+    );
   }
 
   /**
@@ -326,6 +357,23 @@ export class YodooClient {
   getContent(ifModifiedSince?: string): Promise<ContentResult> {
     return this.http
       .getConditional<Record<string, string>>(`${V2_BASE}/content`, ifModifiedSince)
+      .then(({ value, lastModified }) => ({ content: value, lastModified }));
+  }
+
+  /**
+   * GET /locale/app/v2/content/entries — même contenu que `getContent()`, mais chaque valeur
+   * porte en plus ses liens optionnels (`fileId`/`offerId`/`priceId`/`catalogueId`, tous
+   * nullables et indépendants). Aucun objet résolu n'est jamais inclus : aller chercher soi-même
+   * la ressource liée (`getFile`, `getOffer`, `getCatalogue`). **Partage le même budget horaire
+   * et le même `If-Modified-Since` que `getContent()`** (même bucket serveur) — alterner entre
+   * les deux endpoints ne double pas le quota.
+   */
+  getContentEntries(ifModifiedSince?: string): Promise<ContentEntriesResult> {
+    return this.http
+      .getConditional<Record<string, ContentEntryDTO>>(
+        `${V2_BASE}/content/entries`,
+        ifModifiedSince
+      )
       .then(({ value, lastModified }) => ({ content: value, lastModified }));
   }
 

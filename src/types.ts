@@ -382,6 +382,34 @@ export interface ContentResult {
   lastModified: string | null;
 }
 
+/**
+ * Une entrée de GET /locale/app/v2/content/entries (docs/apis/apps/locale.md §6, yodoo_back,
+ * ajouté le 18/09/2026) — même valeur HTML que `ContentResult`, plus les liens optionnels de la
+ * clé vers une ressource. `fileId`/`offerId`/`priceId`/`catalogueId` sont tous nullables et
+ * indépendants (une clé peut n'en avoir aucun, un seul, ou plusieurs). Aucun objet résolu n'est
+ * jamais inclus ici — aller chercher la ressource soi-même : `getFile(fileId)` (bytes),
+ * `getOffer(offerId)`, `getCatalogue(catalogueId)`. `priceId` n'a pas d'endpoint de lecture dédié
+ * sur cette API — le prix se retrouve via l'offre qui le porte.
+ */
+export interface ContentEntryDTO {
+  value: string;
+  fileId: string | null;
+  offerId: string | null;
+  priceId: string | null;
+  catalogueId: string | null;
+}
+
+/**
+ * Résultat de GET /locale/app/v2/content/entries (docs/apis/apps/locale.md §6, yodoo_back) — même
+ * sémantique de fraîcheur que `ContentResult` (`content: null` sur un 304). **Partage le même
+ * budget horaire et le même bucket `If-Modified-Since` que `getContent()`** côté serveur :
+ * alterner entre les deux endpoints ne double pas le quota disponible.
+ */
+export interface ContentEntriesResult {
+  content: Record<string, ContentEntryDTO> | null;
+  lastModified: string | null;
+}
+
 export interface TopOffersParams {
   /** Fenêtre glissante, ex. "7d" (défaut serveur). */
   range?: string;
@@ -524,9 +552,30 @@ export interface SyncSnapshot {
 
 // --- Commandes (POST /locale/app/v2/orders, .../pay/mobile-money — docs/apis/apps/locale.md §8, yodoo_back) ---
 
+/**
+ * Métadonnées d'une photo soumise en réponse à un `PriceOrderSetting` de spécification PHOTO —
+ * pas les octets eux-mêmes, uploadés séparément après coup via `uploadOrderPhoto()` une fois la
+ * commande créée (voir `PendingPhotoUploadDTO`).
+ */
+export interface CreateOrderPhotoDTO {
+  name: string;
+  contentType: string;
+  contentLength: number;
+  ratio: number;
+}
+
 export interface CreateOrderItemPriceSettingDTO {
   setting: string;
   response: string;
+  /**
+   * Uniquement pour une spécification PHOTO. *(Depuis le 18/09/2026 : réellement pris en compte
+   * côté serveur — auparavant accepté sans erreur mais silencieusement ignoré, aucun `File`
+   * n'était créé et aucune route d'upload n'existait.)* Un `File` Provider-owned taggé
+   * `CUSTOMER_UPLOAD` est créé par photo soumise ; leurs `publicId` reviennent dans
+   * `BusinessOrderCreatedDTO.pendingPhotoUploads`, à uploader ensuite un par un via
+   * `uploadOrderPhoto()`.
+   */
+  files?: CreateOrderPhotoDTO[];
 }
 
 /** Requête — une ligne de prix pour un article de `createOrder()`. */
@@ -582,128 +631,29 @@ export interface PayOrderByMobileMoneyParams {
   idempotencyKey: string;
 }
 
-export interface OrderItemSettingAnswerDTO {
-  id: string;
+/**
+ * Une entrée de `BusinessOrderCreatedDTO.pendingPhotoUploads` — une réponse PHOTO soumise à la
+ * création dont les octets restent à envoyer. `files` liste les `publicId` des `File` déjà créés
+ * côté serveur (un par photo soumise dans `responses[].files`), chacun à uploader via
+ * `uploadOrderPhoto(orderId, setting, fileId, ...)`.
+ */
+export interface PendingPhotoUploadDTO {
+  item: string;
+  price: string;
   setting: string;
-  /** `null` si le `PriceOrderSetting` ciblé a depuis été supprimé. */
-  type: string | null;
-  content: string;
-  response: string;
-}
-
-/** Réponse — une ligne de prix, imbriquée dans `OrderItemDTO.prices`. */
-export interface OrderItemPriceDTO {
-  id: string;
-  price: PriceDTO;
-  finalPrice: number | null;
-  currencyType: string;
-  quantity: number;
-  responses: OrderItemSettingAnswerDTO[];
-  /** publicIds des Promotion(s) indiquées par le commerce comme ayant motivé `finalPrice`. */
-  promotionIds: string[];
-  /** publicId de l'unité de stock vendue par cette ligne, `null` si aucune liée. */
-  stockUnitId: string | null;
-  /** Code QR/barcode de l'unité de stock vendue par cette ligne, `null` si aucune liée. */
-  stockUnitCode: string | null;
-}
-
-export interface DevProfileSessionMetadataDTO {
-  loginTimestamp: string;
-  accessTokenDurationSeconds: number;
-  accessTokenExpiresAt: string;
-  refreshTokenDurationSeconds: number | null;
-  refreshTokenExpiresAt: string;
-}
-
-/** `refreshToken`/`accessToken` ne sont jamais sérialisés par le backend (WRITE_ONLY côté Jackson). */
-export interface DevProfileDTO {
-  id: string;
-  createdAt: string;
-  sessionMetadata?: DevProfileSessionMetadataDTO;
-}
-
-export interface ViewPreferenceDTO {
-  id: string;
-  primaryColor: string;
-  secondaryColor: string;
-  preferredTemplate: string;
+  files: string[];
 }
 
 /**
- * Forme complète v1 du commerce, imbriquée dans `OrderOfferDTO.provider` — plus large que
- * `ProviderDetailDTO` (v2) : rating à plat au lieu de `RatingSummaryDTO`, plus `preference` et
- * `developer`.
+ * Réponse de POST /locale/app/v2/orders (docs/apis/apps/locale.md §8, yodoo_back). Remplace,
+ * depuis le 18/09/2026, le `OrderDTO` v1 renvoyé jusque-là par cet endpoint — mêmes champs que
+ * celui-ci en pratique (`items`/`customer`/`locale`/`itemsCount` n'y étaient déjà pas peuplés),
+ * plus `pendingPhotoUploads` : vide sauf si au moins une réponse PHOTO a été soumise dans
+ * `items[].prices[].responses[].files`, auquel cas chaque entrée s'uploade ensuite via
+ * `uploadOrderPhoto()`.
  */
-export interface OrderProviderDTO {
+export interface BusinessOrderCreatedDTO {
   id: string;
-  name: string;
-  location: GeoLocation;
-  directions: string;
-  identifier: string;
-  utcOffset: string;
-  totalRating: number;
-  ratingCount: number;
-  customerCount: number;
-  availabilities: AvailabilityDTO[];
-  createdAt: string;
-  updatedAt: string;
-  filesSizeInBytes: number | null;
-  images: FileDTO[];
-  contacts: ContactDTO[];
-  preference: ViewPreferenceDTO;
-  website: ProviderWebsiteDTO | null;
-  developer: DevProfileDTO | null;
-  isOfficiallyManaged: boolean | null;
-  currency: string;
-  receivesOrders: boolean | null;
-  /** "FREE" quand aucun abonnement n'est actif. */
-  planName: string;
-}
-
-/**
- * Forme complète v1 de l'offre, imbriquée dans `OrderItemDTO.offer` — plus large que
- * `OfferDetailDTO`/`OfferTileDTO` (v2) : `provider` complet, `location`,
- * `providerHandlesDelivery`, `preference`, rating à plat au lieu de `RatingSummaryDTO`.
- */
-export interface OrderOfferDTO {
-  id: string;
-  name: string;
-  description: string;
-  prices: PriceDTO[];
-  /** Peuplé côté listes (où `prices` ne l'est pas) ; `null` quand `prices` est déjà rempli. */
-  priceCount: number | null;
-  availabilities: AvailabilityDTO[];
-  images: FileDTO[];
-  catalogue: CatalogueRefDTO | null;
-  preference: ViewPreferenceDTO | null;
-  status: OfferStatus;
-  provider: OrderProviderDTO;
-  totalRating: number;
-  ratingCount: number;
-  location: GeoLocation;
-  providerHandlesDelivery: boolean;
-  createdAt: string;
-  updatedAt: string;
-  marketplaceProfile: OfferMarketplaceProfileDTO | null;
-}
-
-/** Réponse — un article de commande, imbriqué dans `OrderDTO.items`. */
-export interface OrderItemDTO {
-  id: string;
-  state: string;
-  rejected: boolean;
-  cancelledByUser: boolean;
-  cancelledByProvider: boolean;
-  offer: OrderOfferDTO;
-  prices: OrderItemPriceDTO[];
-}
-
-/** Réponse de POST /locale/app/v2/orders (docs/apis/apps/locale.md §8, yodoo_back). */
-export interface OrderDTO {
-  id: string;
-  locale: string;
-  itemsCount: number;
-  items: OrderItemDTO[];
   validatedByCustomer: boolean;
   validatedByLocale: boolean;
   completed: boolean;
@@ -720,9 +670,8 @@ export interface OrderDTO {
   openItemCount: number;
   closedItemCount: number;
   note: string | null;
-  customer: CustomerProfileDTO | null;
-  createdAt: string;
   updatedAt: string;
+  pendingPhotoUploads: PendingPhotoUploadDTO[];
 }
 
 /**
