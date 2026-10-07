@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HttpClient } from "./http-client.js";
 import { TokenProvider } from "./token-provider.js";
-import { RateLimitedError } from "./errors.js";
+import {
+  ClientError,
+  ConflictError,
+  PayloadTooLargeError,
+  RateLimitedError,
+  ServerError,
+} from "./errors.js";
 
 function client(): { http: HttpClient; tokenProvider: TokenProvider } {
   const tokenProvider = {
@@ -68,5 +74,80 @@ describe("HttpClient.postFile", () => {
     await expect(http.postFile("/upload", new Uint8Array([1]))).rejects.toBeInstanceOf(
       RateLimitedError
     );
+  });
+});
+
+describe("HttpClient language, 204 and errors", () => {
+  it("sends Accept-Language when a language is configured", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response("{}", { status: 200 }));
+    const tokenProvider = {
+      getToken: vi.fn().mockResolvedValue("tok"),
+      invalidate: vi.fn(),
+    } as unknown as TokenProvider;
+    const http = new HttpClient({
+      baseUrl: "https://api.example",
+      tokenProvider,
+      language: "en",
+    });
+
+    await http.get("/x");
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>)["Accept-Language"]).toBe("en");
+  });
+
+  it("does not send Accept-Language by default", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response("{}", { status: 200 }));
+    const { http } = client();
+
+    await http.get("/x");
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(init.headers as Record<string, string>).not.toHaveProperty("Accept-Language");
+  });
+
+  it("resolves a 204 POST to undefined and a 204 DELETE without reading a body", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => new Response(null, { status: 204 }));
+    const { http } = client();
+
+    await expect(http.post("/push/devices", { token: "t" })).resolves.toBeUndefined();
+    await expect(http.delete("/push/devices/t")).resolves.toBeUndefined();
+    expect((fetchMock.mock.calls[1] as [string, RequestInit])[1].method).toBe("DELETE");
+  });
+
+  it("does not cache a GET called with cache: false", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => new Response("{}", { status: 200 }));
+    const { http } = client();
+
+    await http.get("/messages", undefined, { cache: false });
+    await http.get("/messages", undefined, { cache: false });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    [409, ConflictError],
+    [413, PayloadTooLargeError],
+    [415, ClientError],
+    [406, ClientError],
+    [500, ServerError],
+  ])("maps a %i to its typed error, keeping status and apiCode", async (status, type) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ message: "msg", code: "SYNC_CONFLICT" }), { status })
+    );
+    const { http } = client();
+
+    const error = await http.post("/x", {}).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(type);
+    expect(error).toMatchObject({ status, apiCode: "SYNC_CONFLICT", message: "msg" });
   });
 });

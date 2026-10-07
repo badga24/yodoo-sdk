@@ -4,6 +4,8 @@ import type { TokenProvider } from "./token-provider.js";
 export interface HttpClientOptions {
   baseUrl: string;
   tokenProvider: TokenProvider;
+  /** Envoyé en `Accept-Language` sur chaque requête — langue des messages d'erreur et des notices. */
+  language?: string;
 }
 
 export type QueryParams = Record<
@@ -22,22 +24,30 @@ interface CacheEntry {
 export class HttpClient {
   private readonly baseUrl: string;
   private readonly tokenProvider: TokenProvider;
+  private readonly language?: string;
   private readonly cache = new Map<string, CacheEntry>();
 
   constructor(options: HttpClientOptions) {
     this.baseUrl = options.baseUrl;
     this.tokenProvider = options.tokenProvider;
+    this.language = options.language;
   }
 
   /**
    * GET, mis en cache en mémoire (clé = URL complète, query incluse) pour la durée du process,
-   * TTL fixe 1h. `getConditional` (contenu, §6) n'utilise pas ce cache : il a son propre
-   * mécanisme de fraîcheur (`If-Modified-Since`).
+   * TTL fixe 1h — sauf `options.cache: false` (donnée qui change à chaque échange, ex. messages
+   * d'une conversation IA). `getConditional` (contenu, §6) n'utilise pas ce cache : il a son
+   * propre mécanisme de fraîcheur (`If-Modified-Since`).
    */
-  async get<T>(path: string, query?: QueryParams): Promise<T> {
+  async get<T>(
+    path: string,
+    query?: QueryParams,
+    options?: { cache?: boolean }
+  ): Promise<T> {
     const url = this.buildUrl(path, query);
+    const useCache = options?.cache !== false;
 
-    const cached = this.cache.get(url);
+    const cached = useCache ? this.cache.get(url) : undefined;
     if (cached && cached.expiresAt > Date.now()) {
       return cached.value as T;
     }
@@ -54,7 +64,9 @@ export class HttpClient {
           })()
         : await this.parse<T>(response);
 
-    this.cache.set(url, { value, expiresAt: Date.now() + CACHE_TTL_MS });
+    if (useCache) {
+      this.cache.set(url, { value, expiresAt: Date.now() + CACHE_TTL_MS });
+    }
     return value;
   }
 
@@ -122,6 +134,19 @@ export class HttpClient {
     return this.parse<T>(response);
   }
 
+  /** DELETE, réponse `204 No Content` attendue. Même retry-sur-401 que `post()`. */
+  async delete(path: string): Promise<void> {
+    const url = this.buildUrl(path);
+    let response = await this.fetchWithToken(url, "DELETE");
+
+    if (response.status === 401) {
+      this.tokenProvider.invalidate();
+      response = await this.fetchWithToken(url, "DELETE");
+    }
+
+    await this.parse<void>(response);
+  }
+
   /**
    * POST `multipart/form-data` à un seul champ `file` — upload de photo de commande
    * (`uploadOrderPhoto`, §8). Réponse `204 No Content` attendue : pas de `parse()` JSON.
@@ -148,7 +173,7 @@ export class HttpClient {
 
   private async fetchWithToken(
     url: string,
-    method: "GET" | "POST",
+    method: "GET" | "POST" | "DELETE",
     body?: unknown,
     ifModifiedSince?: string
   ): Promise<Response> {
@@ -157,6 +182,7 @@ export class HttpClient {
       method,
       headers: {
         Authorization: `Bearer ${token}`,
+        ...this.languageHeader(),
         ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
         ...(ifModifiedSince !== undefined
           ? { "If-Modified-Since": ifModifiedSince }
@@ -192,14 +218,22 @@ export class HttpClient {
 
     return fetch(url, {
       method: "POST",
-      headers: { Authorization: `Bearer ${token}` },
+      headers: { Authorization: `Bearer ${token}`, ...this.languageHeader() },
       body,
     });
   }
 
+  private languageHeader(): Record<string, string> {
+    return this.language !== undefined ? { "Accept-Language": this.language } : {};
+  }
+
+  /** `204 No Content` (ex. inscription d'un jeton push) → `undefined`, pas de lecture JSON. */
   private async parse<T>(response: Response): Promise<T> {
     if (!response.ok) {
       throw await toDomainError(response);
+    }
+    if (response.status === 204) {
+      return undefined as T;
     }
     return response.json() as Promise<T>;
   }
