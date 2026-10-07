@@ -3,6 +3,26 @@
  * (LocaleApp-integration-guide.md §4), pour pouvoir distinguer le type
  * d'erreur sans reparser le code HTTP partout dans le code appelant.
  */
+/**
+ * Valeurs stables connues du champ `code` des erreurs Yodoo (`DomainError.apiCode`), à utiliser
+ * pour choisir la réaction de l'app plutôt que `message` :
+ * - `AI_CHAT_NOT_CONFIGURED` (403) / `AI_MODEL_UNAVAILABLE` (403) : masquer le chat IA ;
+ * - `AI_MESSAGE_TOO_LONG` (403) : demander au visiteur de raccourcir son message ;
+ * - `AI_SESSION_NOT_FOUND` (404) : démarrer une nouvelle conversation ;
+ * - `AI_REPLY_PENDING` (409) : attendre la réponse en cours puis réessayer ;
+ * - `PUSH_DEVICE_LIMIT` (403) : ne plus proposer les notifications push.
+ *
+ * Yodoo peut renvoyer d'autres codes : le type reste ouvert à toute chaîne.
+ */
+export type ApiErrorCode =
+  | "AI_CHAT_NOT_CONFIGURED"
+  | "AI_MODEL_UNAVAILABLE"
+  | "AI_MESSAGE_TOO_LONG"
+  | "AI_SESSION_NOT_FOUND"
+  | "AI_REPLY_PENDING"
+  | "PUSH_DEVICE_LIMIT"
+  | (string & {});
+
 export abstract class DomainError extends Error {
   abstract readonly code: string;
 
@@ -13,15 +33,16 @@ export abstract class DomainError extends Error {
    *
    * `status` : statut HTTP d'origine (`0` pour une erreur levée par le SDK lui-même, ex.
    * `SyncProtocolError`). `apiCode` : champ `code` du corps d'erreur Yodoo quand il est présent
-   * — un code stable, contrairement à `message` ; absent pour la plupart des erreurs.
+   * — un code stable, contrairement à `message` (voir `ApiErrorCode`) ; absent pour la plupart
+   * des erreurs.
    */
   readonly status: number;
-  readonly apiCode?: string;
+  readonly apiCode?: ApiErrorCode;
 
   constructor(
     message: string,
     readonly fields?: Record<string, string>,
-    details?: { status?: number; apiCode?: string }
+    details?: { status?: number; apiCode?: ApiErrorCode }
   ) {
     super(message);
     this.name = new.target.name;

@@ -377,10 +377,12 @@ export class YodooClient {
    * sont réglés par le commerce. Une réponse avec `errorCode` non-null est une **notice** à
    * afficher telle quelle (ex. limite atteinte), pas une erreur.
    *
-   * Erreurs : `ForbiddenError` si le commerce n'a pas (ou plus) de modèle utilisable — masquer
-   * le chat — ou si le message est trop long ; `NotFoundError` si `sessionId` est inconnu ou a été
-   * ouvert par une autre app ; `ConflictError` si la réponse précédente de cette conversation
-   * est encore en cours. **La limitation de débit par visiteur (IP…) est à faire côté app** :
+   * Erreurs (brancher sur `apiCode`) : `ForbiddenError` `AI_CHAT_NOT_CONFIGURED` /
+   * `AI_MODEL_UNAVAILABLE` si le commerce n'a pas (ou plus) de modèle utilisable — masquer le
+   * chat —, `AI_MESSAGE_TOO_LONG` si le message est trop long ; `NotFoundError`
+   * `AI_SESSION_NOT_FOUND` si `sessionId` est inconnu ou a été ouvert par une autre app ;
+   * `ConflictError` `AI_REPLY_PENDING` si la réponse précédente de cette conversation est encore
+   * en cours. **La limitation de débit par visiteur (IP…) est à faire côté app** :
    * Yodoo ne voit que le serveur de l'app.
    */
   sendAiMessage(params: AiChatParams): Promise<AiMessageDTO> {
@@ -390,7 +392,8 @@ export class YodooClient {
   /**
    * GET /locale/app/v2/ai/sessions/{id}/messages — relit une conversation ouverte par cette app
    * (ex. après rechargement de la page), du plus ancien au plus récent ; `size` défaut 20. Les
-   * messages du visiteur ont `role: "USER"`. Jamais mis en cache côté client.
+   * messages du visiteur ont `role: "USER"`. Jamais mis en cache côté client. `NotFoundError`
+   * (`apiCode` `AI_SESSION_NOT_FOUND`) si la conversation n'a pas été ouverte par cette app.
    */
   listAiMessages(
     sessionId: string,
@@ -418,8 +421,8 @@ export class YodooClient {
    * jeton : réinscrire un jeton connu le rafraîchit sans le compter deux fois. Seuls les jetons
    * rattachés à un client (`visitor`) sont atteints par les campagnes.
    *
-   * `ForbiddenError` : le commerce a atteint sa limite d'appareils inscrits (seul un **nouveau**
-   * jeton est refusé).
+   * `ForbiddenError` (`apiCode` `PUSH_DEVICE_LIMIT`) : le commerce a atteint sa limite
+   * d'appareils inscrits (seul un **nouveau** jeton est refusé).
    */
   registerPushDevice(params: RegisterPushDeviceParams): Promise<void> {
     return this.http.post<void>(`${V2_BASE}/push/devices`, params);
