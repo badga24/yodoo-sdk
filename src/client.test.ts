@@ -425,3 +425,82 @@ describe("YodooClient.uploadOrderPhoto", () => {
     );
   });
 });
+
+describe("YodooClient.createOrder options", () => {
+  it("sends the client-supplied order id and serializes a Date createdAt", async () => {
+    const post = vi
+      .spyOn(HttpClient.prototype, "post")
+      .mockResolvedValue({ id: "order_1" } as never);
+    const client = newClient();
+    const items = [
+      {
+        id: "11111111-1111-1111-1111-111111111111",
+        offer: "offer_1",
+        prices: [{ price: "price_1", quantity: 1, ids: ["22222222-2222-2222-2222-222222222222"] }],
+      },
+    ];
+
+    await client.createOrder(items, undefined, "Awa, +229 97 00 00 00", {
+      id: "33333333-3333-3333-3333-333333333333",
+      createdAt: new Date("2026-10-03T10:00:00Z"),
+    });
+
+    expect(post).toHaveBeenCalledWith("/locale/app/v2/orders", {
+      items,
+      offlineAuthorizationCode: undefined,
+      note: "Awa, +229 97 00 00 00",
+      id: "33333333-3333-3333-3333-333333333333",
+      createdAt: "2026-10-03T10:00:00.000Z",
+    });
+  });
+});
+
+describe("YodooClient AI chat", () => {
+  it("posts the visitor message to ai/chat", async () => {
+    const post = vi
+      .spyOn(HttpClient.prototype, "post")
+      .mockResolvedValue({ id: "m1", sessionId: "s1", role: "ASSISTANT" } as never);
+    const client = newClient();
+    const params = {
+      message: "Vous avez des gâteaux sans gluten ?",
+      visitor: { name: "Awa Diallo", phoneNumber: "+229 97 00 00 00" },
+    };
+
+    const reply = await client.sendAiMessage(params);
+
+    expect(post).toHaveBeenCalledWith("/locale/app/v2/ai/chat", params);
+    expect(reply.sessionId).toBe("s1");
+  });
+
+  it("reads a conversation without the response cache", async () => {
+    const get = vi
+      .spyOn(HttpClient.prototype, "get")
+      .mockResolvedValue({ content: [] } as never);
+    const client = newClient();
+
+    await client.listAiMessages("s/1", { page: 1, size: 50 });
+
+    expect(get).toHaveBeenCalledWith(
+      "/locale/app/v2/ai/sessions/s%2F1/messages",
+      { page: 1, size: 30, sort: undefined },
+      { cache: false }
+    );
+  });
+});
+
+describe("YodooClient push", () => {
+  it("registers and unregisters a device token", async () => {
+    const post = vi.spyOn(HttpClient.prototype, "post").mockResolvedValue(undefined);
+    const del = vi.spyOn(HttpClient.prototype, "delete").mockResolvedValue(undefined);
+    const client = newClient();
+
+    await client.registerPushDevice({ token: "tok:1", platform: "WEB" });
+    await client.unregisterPushDevice("tok:1");
+
+    expect(post).toHaveBeenCalledWith("/locale/app/v2/push/devices", {
+      token: "tok:1",
+      platform: "WEB",
+    });
+    expect(del).toHaveBeenCalledWith("/locale/app/v2/push/devices/tok%3A1");
+  });
+});

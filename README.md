@@ -1,20 +1,20 @@
 # yodoo-sdk
 
 Client TypeScript typé pour l'API **Yodoo LocaleApp** (`ROLE_LOCALE_APP`) : catalogues,
-offres, prix, disponibilités, contacts, moyens de paiement — en lecture seule, via un
-couple `appId` / `appSecret`.
+offres, prix, disponibilités, contacts, moyens de paiement, plus commandes, chat IA visiteur
+et notifications push — via un couple `appId` / `appSecret`.
 
 Ce package n'est pas publié sur npm. Il s'installe directement depuis son dépôt git.
 
 ## Installation
 
 ```bash
-npm install git+https://github.com/badga24/yodoo-sdk.git#v0.12.0
+npm install git+https://github.com/badga24/yodoo-sdk.git#v0.13.0
 # ou, avec SSH :
-npm install git+ssh://git@github.com/badga24/yodoo-sdk.git#v0.12.0
+npm install git+ssh://git@github.com/badga24/yodoo-sdk.git#v0.13.0
 ```
 
-Le suffixe `#v0.12.0` fige une version précise (voir les tags du dépôt) ; sans lui, `npm install`
+Le suffixe `#v0.13.0` fige une version précise (voir les tags du dépôt) ; sans lui, `npm install`
 suit la branche par défaut.
 
 `npm install` déclenche automatiquement `npm run build` (script `prepare`) : aucune étape
@@ -68,6 +68,7 @@ Le client contacte toujours `https://api.yodoo.space` — ce n'est pas configura
 | `appSecret` | oui | Fourni par le propriétaire du commerce, jamais côté navigateur |
 | `fileCacheMaxBytes` | non | Taille max (octets) du cache en mémoire de `getFile()`. `0` désactive la mise en cache. Défaut : 50 Mo |
 | `autoSync` | non | Lance `sync()` dès la construction, sans bloquer (fire-and-forget). `getStore()` renvoie ensuite le store mémoïsé. Défaut : `false` |
+| `language` | non | `"fr"` ou `"en"` — langue des messages renvoyés par Yodoo (`message` des erreurs, notices de l'assistant IA), envoyée en `Accept-Language`. Défaut : français |
 
 ### Méthodes (endpoints `/locale/app/v2/**`, sauf mention contraire)
 
@@ -90,9 +91,14 @@ Le client contacte toujours `https://api.yodoo.space` — ce n'est pas configura
 | `getContent(ifModifiedSince?)` | `GET /locale/app/v2/content` | `ContentResult` (clé → HTML ; throttlé à 1 payload réel/heure/app, voir plus bas) |
 | `getContentEntries(ifModifiedSince?)` | `GET /locale/app/v2/content/entries` | `ContentEntriesResult` (clé → `{ value, fileId, offerId, priceId, catalogueId }` ; même quota/throttle que `getContent`, voir plus bas) |
 | `registerCustomerFromToken(token)` | `POST /locale/app/v2/customers/from-token` | `CustomerProfileDTO` |
-| `createOrder(items, offlineAuthorizationCode?, note?)` | `POST /locale/app/v2/orders` | `BusinessOrderCreatedDTO` (vente comptoir, articles nés `CLOSED`) |
+| `createOrder(items, offlineAuthorizationCode?, note?, options?)` | `POST /locale/app/v2/orders` | `BusinessOrderCreatedDTO` (commande née `PENDING` ; `options` = `{ id, createdAt }`, voir plus bas) |
 | `uploadOrderPhoto(orderId, settingId, fileId, file, options?)` | `POST /locale/app/v2/orders/{order}/settings/{setting}/photos/{fileId}/upload` | `void` (upload des octets d'une réponse PHOTO, voir plus bas) |
 | `payOrderByMobileMoney(orderId, params)` | `POST /locale/app/v2/orders/{order}/pay/mobile-money` | `InvoiceDTO` |
+| `sendAiMessage(params)` | `POST /locale/app/v2/ai/chat` | `AiMessageDTO` — réponse de l'assistant IA du commerce à un visiteur (voir plus bas) |
+| `listAiMessages(sessionId, params?)` | `GET /locale/app/v2/ai/sessions/{id}/messages` | `PageDTO<AiMessageDTO>` — relit une conversation (jamais mis en cache) |
+| `getPushConfig()` | `GET /locale/app/v2/push/config` | `PushConfigDTO` — config web Firebase publique, à transmettre au navigateur |
+| `registerPushDevice(params)` | `POST /locale/app/v2/push/devices` | `void` — inscrit/rafraîchit le jeton push d'un visiteur |
+| `unregisterPushDevice(token)` | `DELETE /locale/app/v2/push/devices/{token}` | `void` — désinscrit un jeton (idempotent) |
 | `getFileUrl(fileId)` | — | URL publique de streaming d'un fichier (`FileDTO.id`) |
 | `getFile(fileId)` | — | `{ bytes, contentType, cacheControl }` — télécharge le fichier, mis en cache en mémoire (voir plus bas) |
 | `invalidateToken()` | — | Force le renouvellement du token au prochain appel |
@@ -274,11 +280,83 @@ cache. Pas de TTL nécessaire, `fileId` étant un identifiant immuable côté ba
 navigateur ; le cache en mémoire de `getFile()` ne fait pas ce travail à ta place, il évite
 seulement de rappeler Yodoo depuis ce process.
 
+### Chat IA visiteur
+
+`sendAiMessage({ sessionId?, message, visitor? })` transmet le message d'un visiteur du site à
+l'assistant IA du commerce et renvoie sa réponse (`AiMessageDTO`). L'assistant ne voit que la
+vitrine publique du commerce (infos, offres publiées, prix) et ne passe ni ne modifie aucune
+commande. Le modèle, le nom, les instructions et les limites de messages sont réglés par le
+commerce depuis son tableau de bord, pas par l'app.
+
+```ts
+// Route Handler du site — jamais depuis le navigateur
+const reply = await yodoo.sendAiMessage({
+  sessionId: body.sessionId ?? null,      // null → nouvelle conversation
+  message: body.message,
+  visitor: { name: "Awa Diallo", phoneNumber: "+229 97 00 00 00" }, // optionnel
+});
+// reply.sessionId à renvoyer au navigateur pour la suite de la conversation
+// reply.references : [{ type: "OFFER" | "PRICE" | "CATALOGUE" | "FILE" | "PROVIDER", id }] à afficher en cartes
+```
+
+- **Synchrone et potentiellement long** (plusieurs dizaines de secondes) : prévoir un timeout
+  large sur la route qui l'appelle.
+- `errorCode` non-null : `content` est une **notice** à afficher telle quelle, pas une erreur —
+  `VISITOR_SESSION_CAP_REACHED` (limite de la conversation atteinte : proposer d'en démarrer
+  une nouvelle), `VISITOR_DAILY_CAP_REACHED` (limite du jour atteinte : réessayer le lendemain,
+  jour UTC), ou un échec des modèles (`ALL_UNAVAILABLE`, `QUOTA_EXHAUSTED`…). Sa langue suit
+  l'option `language`.
+- `visitor` est une identité **déclarée**, jamais vérifiée : elle sert au commerce à savoir à
+  qui il a parlé et ne débloque rien dans le chat. Seul le premier `visitor` d'une conversation
+  compte.
+- Une conversation n'est accessible qu'à l'app qui l'a ouverte. `listAiMessages(sessionId)` la
+  relit (ex. après rechargement de la page), du plus ancien au plus récent.
+- Erreurs : `ForbiddenError` si le commerce n'a pas configuré l'assistant ou que son modèle
+  n'est plus utilisable (**masquer le chat**), ou si le message est trop long ;
+  `NotFoundError` pour un `sessionId` inconnu ; `ConflictError` si la réponse précédente de la
+  conversation est encore en cours.
+- **Limiter le débit par visiteur (IP…) côté site** : Yodoo ne voit que le serveur de l'app,
+  seules les limites du commerce s'appliquent de son côté.
+
+### Notifications push
+
+Le commerce envoie des campagnes push depuis son tableau de bord aux visiteurs qui ont accepté
+les notifications ; l'app se contente d'**inscrire leurs jetons**. Tous les sites partagent un
+même projet Firebase, dont la config web publique s'obtient via `getPushConfig()`.
+
+1. Côté serveur, `getPushConfig()` puis transmettre la config au navigateur (elle est publique).
+   `available: false` → ne pas proposer les notifications.
+2. Servir à la racine du domaine un service worker `/firebase-messaging-sw.js` qui initialise
+   Firebase avec la même config, pour afficher les notifications reçues onglet fermé.
+3. Dans le navigateur, après `Notification.requestPermission()`, obtenir le jeton :
+   `getToken(messaging, { vapidKey, serviceWorkerRegistration })`.
+4. Envoyer ce jeton au serveur du site, qui appelle `registerPushDevice({ token, platform:
+   "WEB", visitor? })` — **à chaque visite** (rappeler `getToken`, le jeton peut changer).
+5. Désabonnement (ou déconnexion d'un appareil partagé) : `unregisterPushDevice(token)`.
+
+- Seuls les jetons rattachés à un client (`visitor` fourni, identité déclarée — même règle que
+  le chat IA) sont atteints par les campagnes ; un jeton anonyme reste inscrit en attendant que
+  le visiteur se présente. Renvoyé avec un autre `visitor`, le jeton change de client.
+- `ForbiddenError` sur `registerPushDevice` : le commerce a atteint sa limite d'appareils
+  inscrits (seul un nouveau jeton est refusé, les jetons connus se rafraîchissent toujours).
+- Sur iOS, le web push ne fonctionne que dans une **PWA installée** (« Sur l'écran
+  d'accueil »), pas dans Safari directement.
+- Les `data` de la notification reçue portent `type: "CAMPAIGN"`, `id` / `publicId` (la
+  campagne), `businessId`, et `imageId` / `logoId` quand ils existent (ids de fichiers, voir
+  `getFileUrl`).
+
 ### Gestion des erreurs
 
 Les erreurs HTTP sont converties en instances typées de `DomainError` :
-`UnauthorizedError` (401), `ForbiddenError` (403), `NotFoundError` (404),
-`ValidationError` (400), `RateLimitedError` (429), `ServerError` (autres).
+`ValidationError` (400), `UnauthorizedError` (401), `ForbiddenError` (403),
+`NotFoundError` (404), `ConflictError` (409), `PayloadTooLargeError` (413),
+`RateLimitedError` (429), `ClientError` (autres `4xx`, ex. 406/415) et `ServerError` (`5xx` —
+un vrai incident côté Yodoo, jamais une requête invalide).
+
+Chaque erreur expose aussi `status` (statut HTTP), `fields` (champs fautifs d'un `400`, ou
+paramètre de requête en cause) et `apiCode` (code stable renvoyé par Yodoo, quand il existe).
+**`message` est traduit selon l'option `language` et son texte peut changer** : l'afficher, mais
+ne jamais brancher de logique dessus — uniquement sur la classe d'erreur, `status` et `apiCode`.
 `sync()` / `syncMain()` / `syncOthers()` peuvent en plus lever `SyncProtocolError` (aussi une
 `DomainError`) quand un flux NDJSON reçu est tronqué ou incohérent avec son `meta.counts`.
 
@@ -313,14 +391,25 @@ try {
 - Un site tiers appelant l'API directement depuis le navigateur sera bloqué par CORS sauf
   si son origine est whitelistée côté Yodoo — faire les appels depuis le serveur.
 - La plupart des routes exposées sont en lecture seule. Les exceptions : `registerCustomerFromToken`,
-  `createOrder` et `payOrderByMobileMoney`.
+  `createOrder`, `uploadOrderPhoto`, `payOrderByMobileMoney`, `sendAiMessage`,
+  `registerPushDevice` et `unregisterPushDevice`.
 - `createOrder` et `payOrderByMobileMoney` agissent au nom d'un client précis, identifié par un
   `offlineAuthorizationCode` (code hors-ligne signé, généré côté app cliente — hors-scope de ce
   SDK). Sur `payOrderByMobileMoney`, ce code est obligatoire : toute requête qui l'omet est
   rejetée (403) avant même d'initier le paiement. Sur `createOrder`, il est optionnel — l'omettre
-  attribue la commande au profil auto-référentiel du commerce plutôt qu'à un client identifié
-  (utile pour une intégration sans notion de client connecté, ex. commande anonyme depuis un site
-  vitrine) ; passer `note` pour transmettre des coordonnées collectées côté formulaire dans ce cas.
+  crée une **vente anonyme** (`customer: null`, utile pour une intégration sans notion de client
+  connecté, ex. commande depuis un site vitrine) ; passer `note` pour transmettre des coordonnées
+  collectées côté formulaire dans ce cas.
+- `createOrder` crée une commande `PENDING`, que le commerce traite puis clôture. `finalPrice` est
+  facultatif sur chaque ligne (le commerce fixe le prix s'il manque).
+- **Idempotence de `createOrder`** : passer `options.id` (un UUID généré une fois par commande)
+  permet de rejouer la requête sans risque après une réponse perdue — Yodoo renvoie la commande
+  déjà créée au lieu d'en créer une seconde (`ConflictError` si cet id appartient à un autre
+  commerce). Avec un `offlineAuthorizationCode`, la commande prend l'id signé dans le code (un
+  même code donne toujours la même commande) et `options.id`, s'il est fourni, doit lui être
+  égal. `options.createdAt` enregistre une commande prise hors-ligne à sa date réelle. Les
+  articles (`items[].id`) et lignes (`prices[].ids`, une par ligne créée : `quantity` ids pour un
+  prix à unités individuelles, un seul sinon) acceptent aussi des ids choisis par l'app.
 - Une réponse à une spécification `PriceOrderSetting` de type PHOTO (`responses[].files`, sur un
   article de `createOrder`) ne porte que des métadonnées (`name`, `contentType`, `contentLength`,
   `ratio`) — jamais les octets. La commande créée renvoie alors des entrées dans
@@ -380,3 +469,16 @@ npm run typecheck
     champs effectivement peuplés), avec un nouveau champ `pendingPhotoUploads`. Ajout de
     `uploadOrderPhoto(orderId, settingId, fileId, file, options?)` pour envoyer les octets de
     chaque entrée en attente.
+- **07/10/2026** (v0.13.0) —
+  - ajout du chat IA visiteur (`sendAiMessage`, `listAiMessages`) et des notifications push
+    (`getPushConfig`, `registerPushDevice`, `unregisterPushDevice`).
+  - option client `language` (`"fr"` / `"en"`) : `message` des erreurs suit désormais la langue
+    demandée (français par défaut) — beaucoup de textes d'erreur ont changé.
+  - erreurs : Yodoo renvoie désormais le vrai statut de nombreuses erreurs côté client
+    auparavant signalées en `500`. Nouvelles classes `ConflictError` (409),
+    `PayloadTooLargeError` (413) et `ClientError` (autres `4xx`) — un `409` levait jusqu'ici
+    `ServerError`. Toute `DomainError` expose `status` et `apiCode`.
+  - `createOrder` : la commande naît `PENDING`, `finalPrice` devient
+    facultatif ; sans `offlineAuthorizationCode`, c'est une vente anonyme (`customer: null`) au
+    lieu d'être attribuée au profil du commerce ; nouveau paramètre `options` (`id`, `createdAt`)
+    pour une création idempotente, et ids optionnels sur articles (`id`) et lignes (`ids`).

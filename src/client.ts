@@ -16,12 +16,15 @@ import {
   syncOfferToTile,
 } from "./store-adapter.js";
 import type {
+  AiChatParams,
+  AiMessageDTO,
   BusinessOrderCreatedDTO,
   CatalogueDetailDTO,
   CatalogueTileDTO,
   ContentEntriesResult,
   ContentEntryDTO,
   CreateOrderItemDTO,
+  CreateOrderOptions,
   CustomerProfileDTO,
   EventDetailDTO,
   EventTileDTO,
@@ -34,6 +37,8 @@ import type {
   PageParams,
   PayOrderByMobileMoneyParams,
   ProviderDetailDTO,
+  PushConfigDTO,
+  RegisterPushDeviceParams,
   SyncMainSnapshot,
   SyncOthersSnapshot,
   TopOffersDTO,
@@ -74,6 +79,11 @@ export interface YodooClientOptions {
    * un client qui ne fait que `createOrder()` par ex.).
    */
   autoSync?: boolean;
+  /**
+   * Langue des messages renvoyés par Yodoo (`message` des erreurs, notices de l'assistant IA),
+   * envoyée en `Accept-Language` sur chaque requête : `"fr"` ou `"en"`. Absent : français.
+   */
+  language?: "fr" | "en";
 }
 
 function pageQuery(params?: PageParams): QueryParams {
@@ -90,8 +100,8 @@ function pageQuery(params?: PageParams): QueryParams {
 /**
  * Client pour l'API Yodoo LocaleApp v2 (ROLE_LOCALE_APP) : lecture des données
  * du commerce (catalogues, offres, prix, disponibilités, contacts, moyens de
- * paiement) via un couple appId/appSecret, plus un seul endpoint d'écriture
- * (`registerCustomerFromToken`, depuis le 04/08/2026).
+ * paiement) via un couple appId/appSecret, plus quelques écritures (client via
+ * share-token, commandes, chat IA visiteur, jetons push).
  *
  * À utiliser côté serveur uniquement — voir LocaleApp-integration-guide.md §1.4
  * (CORS + appSecret ne doit jamais atteindre le navigateur).
@@ -112,6 +122,7 @@ export class YodooClient {
     this.http = new HttpClient({
       baseUrl: API_BASE_URL,
       tokenProvider: this.tokenProvider,
+      language: options.language,
     });
     this.fileCache = new BoundedFileCache(
       options.fileCacheMaxBytes ?? DEFAULT_FILE_CACHE_MAX_BYTES
@@ -276,18 +287,21 @@ export class YodooClient {
   }
 
   /**
-   * POST /locale/app/v2/orders — crée une commande "vente comptoir". `finalPrice` est requis
-   * sur chaque ligne de `items` : c'est le commerce qui fixe le prix, pas le client qui
-   * choisit parmi des prix publiés. Les articles naissent `CLOSED` (stock et revenu
-   * comptabilisés immédiatement).
+   * POST /locale/app/v2/orders — crée une commande pour le commerce. Elle naît `PENDING` : le
+   * commerce la traite et la clôture ensuite. `finalPrice` est facultatif sur chaque ligne (le
+   * commerce fixe le prix s'il manque).
    *
    * `offlineAuthorizationCode` (code hors-ligne signé, généré côté app cliente) identifie le
    * client au nom de qui la commande est passée et impose le `publicId` de la commande : un
-   * code donné ne peut créer qu'une seule commande (rejeu → 409). Optionnel : omis, la commande
-   * est attribuée au profil auto-référentiel du commerce plutôt qu'à un client identifié — utile
-   * pour une intégration sans notion de client connecté (ex. commande anonyme depuis un site
-   * vitrine). Utiliser `note` pour transmettre des coordonnées collectées côté formulaire dans
-   * ce cas.
+   * code donné donne toujours la même commande (rejeu → commande existante renvoyée).
+   * Optionnel : omis, la commande est une **vente anonyme** (`customer: null`) — utile pour une
+   * intégration sans notion de client connecté (ex. commande depuis un site vitrine). Utiliser
+   * `note` pour transmettre des coordonnées collectées côté formulaire dans ce cas.
+   *
+   * `options.id` (UUID choisi par l'app) rend la création idempotente : la rejouer après une
+   * réponse perdue renvoie la commande déjà créée au lieu d'en créer une seconde (`409` si cet id
+   * appartient à un autre commerce). Les articles (`items[].id`) et lignes (`prices[].ids`)
+   * acceptent aussi des ids choisis par l'app.
    *
    * Une réponse `PHOTO` dans `items[].prices[].responses[].files` (métadonnées seulement) fait
    * revenir des entrées dans `pendingPhotoUploads` : uploader ensuite les octets de chacune via
@@ -296,12 +310,16 @@ export class YodooClient {
   createOrder(
     items: CreateOrderItemDTO[],
     offlineAuthorizationCode?: string,
-    note?: string
+    note?: string,
+    options?: CreateOrderOptions
   ): Promise<BusinessOrderCreatedDTO> {
+    const createdAt = options?.createdAt;
     return this.http.post<BusinessOrderCreatedDTO>(`${V2_BASE}/orders`, {
       items,
       offlineAuthorizationCode,
       note,
+      id: options?.id,
+      createdAt: createdAt instanceof Date ? createdAt.toISOString() : createdAt,
     });
   }
 
@@ -345,6 +363,72 @@ export class YodooClient {
     return this.http.post<InvoiceDTO>(
       `${V2_BASE}/orders/${encodeURIComponent(orderId)}/pay/mobile-money`,
       params
+    );
+  }
+
+  /**
+   * POST /locale/app/v2/ai/chat — envoie le message d'un visiteur du site à l'assistant IA du
+   * commerce et renvoie sa réponse. **Synchrone et potentiellement long** (plusieurs dizaines de
+   * secondes) : prévoir un timeout large côté route. Laisser `sessionId` vide pour démarrer une
+   * conversation, puis repasser le `sessionId` reçu.
+   *
+   * L'assistant ne voit que la vitrine publique du commerce (infos, offres publiées, prix) ; il
+   * ne passe ni ne modifie aucune commande. Modèle, nom, instructions et limites de messages
+   * sont réglés par le commerce. Une réponse avec `errorCode` non-null est une **notice** à
+   * afficher telle quelle (ex. limite atteinte), pas une erreur.
+   *
+   * Erreurs : `ForbiddenError` si le commerce n'a pas (ou plus) de modèle utilisable — masquer
+   * le chat — ou si le message est trop long ; `NotFoundError` si `sessionId` est inconnu ou a été
+   * ouvert par une autre app ; `ConflictError` si la réponse précédente de cette conversation
+   * est encore en cours. **La limitation de débit par visiteur (IP…) est à faire côté app** :
+   * Yodoo ne voit que le serveur de l'app.
+   */
+  sendAiMessage(params: AiChatParams): Promise<AiMessageDTO> {
+    return this.http.post<AiMessageDTO>(`${V2_BASE}/ai/chat`, params);
+  }
+
+  /**
+   * GET /locale/app/v2/ai/sessions/{id}/messages — relit une conversation ouverte par cette app
+   * (ex. après rechargement de la page), du plus ancien au plus récent ; `size` défaut 20. Les
+   * messages du visiteur ont `role: "USER"`. Jamais mis en cache côté client.
+   */
+  listAiMessages(
+    sessionId: string,
+    params?: PageParams
+  ): Promise<PageDTO<AiMessageDTO>> {
+    return this.http.get<PageDTO<AiMessageDTO>>(
+      `${V2_BASE}/ai/sessions/${encodeURIComponent(sessionId)}/messages`,
+      pageQuery(params),
+      { cache: false }
+    );
+  }
+
+  /**
+   * GET /locale/app/v2/push/config — config web Firebase **publique** à transmettre au navigateur
+   * pour y obtenir un jeton push (`getToken(messaging, { vapidKey })`). La même pour toutes les
+   * apps et tous les domaines. `available: false` : ne pas proposer les notifications.
+   */
+  getPushConfig(): Promise<PushConfigDTO> {
+    return this.http.get<PushConfigDTO>(`${V2_BASE}/push/config`);
+  }
+
+  /**
+   * POST /locale/app/v2/push/devices — inscrit (ou rafraîchit) le jeton push d'un visiteur, pour
+   * qu'il reçoive les campagnes du commerce. À rappeler à chaque visite / rafraîchissement du
+   * jeton : réinscrire un jeton connu le rafraîchit sans le compter deux fois. Seuls les jetons
+   * rattachés à un client (`visitor`) sont atteints par les campagnes.
+   *
+   * `ForbiddenError` : le commerce a atteint sa limite d'appareils inscrits (seul un **nouveau**
+   * jeton est refusé).
+   */
+  registerPushDevice(params: RegisterPushDeviceParams): Promise<void> {
+    return this.http.post<void>(`${V2_BASE}/push/devices`, params);
+  }
+
+  /** DELETE /locale/app/v2/push/devices/{token} — désinscrit un jeton pour cette app. Idempotent. */
+  unregisterPushDevice(token: string): Promise<void> {
+    return this.http.delete(
+      `${V2_BASE}/push/devices/${encodeURIComponent(token)}`
     );
   }
 

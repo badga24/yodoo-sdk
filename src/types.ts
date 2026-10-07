@@ -581,16 +581,41 @@ export interface CreateOrderItemPriceSettingDTO {
 /** Requête — une ligne de prix pour un article de `createOrder()`. */
 export interface CreateOrderItemPriceDTO {
   price: string;
-  /** Chaîne de chiffres (montant en plus petite unité de devise) — requis sur cet endpoint. */
-  finalPrice: string;
+  /**
+   * Chaîne de chiffres (montant unitaire en plus petite unité de devise). Facultatif : absent, le
+   * commerce fixe le prix lui-même avant de clôturer la commande.
+   */
+  finalPrice?: string;
   quantity: number;
+  /**
+   * `publicId` (UUID) choisis par l'app pour les lignes créées — exactement `quantity` pour un prix
+   * à unités individuelles (une ligne par unité), exactement 1 sinon (`400` si le compte ne colle
+   * pas). Générés par Yodoo si absents.
+   */
+  ids?: string[];
   responses?: CreateOrderItemPriceSettingDTO[];
 }
 
 /** Requête — un article de `createOrder()`. */
 export interface CreateOrderItemDTO {
+  /** `publicId` (UUID) choisi par l'app pour cet article ; généré par Yodoo si absent. */
+  id?: string;
   offer: string;
   prices: CreateOrderItemPriceDTO[];
+}
+
+/** Options de `createOrder()` en plus des articles, du code client et de la note. */
+export interface CreateOrderOptions {
+  /**
+   * `publicId` (UUID) choisi par l'app pour la commande — rend la création **idempotente** :
+   * renvoyer la même requête après une réponse perdue renvoie la commande déjà créée (`201`)
+   * au lieu d'en créer une seconde. Un `id` appartenant à un autre commerce échoue en `409`.
+   * Avec un `offlineAuthorizationCode`, doit égaler l'id de commande signé dans le code (`400`
+   * sinon).
+   */
+  id?: string;
+  /** Date de création à enregistrer (commande prise hors-ligne) ; heure serveur sinon. */
+  createdAt?: string | Date;
 }
 
 /**
@@ -688,4 +713,86 @@ export interface InvoiceDTO {
   currencyType: string;
   createdAt: string;
   updatedAt: string;
+}
+
+// --- Chat IA visiteur (POST /locale/app/v2/ai/chat, GET .../ai/sessions/{id}/messages) ---
+
+/**
+ * Identité **déclarée** par un visiteur du site (jamais vérifiée par Yodoo). Rattache la
+ * conversation / le jeton push au client du commerce enregistré avec ce numéro (créé s'il
+ * n'existe pas) ; ne donne accès à aucune donnée de ce client.
+ */
+export interface VisitorDTO {
+  /** 100 caractères max. */
+  name: string;
+  /** 20 caractères max. */
+  phoneNumber: string;
+}
+
+export interface AiChatParams {
+  /** Conversation à poursuivre (`sessionId` d'une réponse précédente) ; absent/`null` → nouvelle conversation. */
+  sessionId?: string | null;
+  message: string;
+  /** Pris en compte une seule fois par conversation : le premier `visitor` envoyé compte. */
+  visitor?: VisitorDTO;
+}
+
+export type AiMessageRole = "USER" | "ASSISTANT";
+
+export type AiReferenceType = "PROVIDER" | "OFFER" | "PRICE" | "CATALOGUE" | "FILE";
+
+/** Élément dont parle une réponse de l'assistant, à afficher en carte — `id` = publicId de la ressource. */
+export interface AiMessageReferenceDTO {
+  type: AiReferenceType;
+  id: string;
+}
+
+/**
+ * Un message d'une conversation avec l'assistant IA du commerce. Si `errorCode` est non-null,
+ * `content` est une **notice** (dans la langue demandée) à afficher telle quelle au lieu d'une
+ * réponse — ex. `VISITOR_SESSION_CAP_REACHED` (limite de la conversation atteinte : proposer
+ * d'en démarrer une nouvelle), `VISITOR_DAILY_CAP_REACHED` (limite du jour du commerce atteinte :
+ * réessayer le lendemain, jour UTC), ou un échec des modèles (`ALL_UNAVAILABLE`,
+ * `QUOTA_EXHAUSTED`, `YODOO_QUOTA_EXHAUSTED`…).
+ */
+export interface AiMessageDTO {
+  id: string;
+  sessionId: string;
+  role: AiMessageRole;
+  content: string;
+  errorCode: string | null;
+  /** Toujours vide sur un message `USER`. */
+  references: AiMessageReferenceDTO[];
+  createdAt: string;
+}
+
+// --- Notifications push (GET/POST/DELETE /locale/app/v2/push/**) ---
+
+/**
+ * Config web Firebase **publique** du projet commun à toutes les apps Yodoo — identique pour tous
+ * les domaines, transmissible telle quelle au navigateur. `available: false` (tous les autres
+ * champs `null`) : le push n'est pas disponible, ne pas proposer les notifications.
+ */
+export interface PushConfigDTO {
+  available: boolean;
+  apiKey: string | null;
+  projectId: string | null;
+  messagingSenderId: string | null;
+  appId: string | null;
+  /** Clé VAPID publique, à passer à `getToken(messaging, { vapidKey })`. */
+  vapidKey: string | null;
+}
+
+export type PushPlatform = "WEB" | "ANDROID" | "IOS";
+
+export interface RegisterPushDeviceParams {
+  /** Jeton d'enregistrement Firebase (512 caractères max). */
+  token: string;
+  platform: PushPlatform;
+  /**
+   * Identité déclarée du visiteur — même règle que le chat IA. Renvoyé avec un autre visiteur, le
+   * jeton change de client (appareil partagé) ; omis, il garde son rattachement actuel. Seuls les
+   * jetons rattachés à un client sont atteints par les campagnes du commerce.
+   */
+  visitor?: VisitorDTO;
 }
