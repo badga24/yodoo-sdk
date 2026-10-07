@@ -311,10 +311,32 @@ const reply = await yodoo.sendAiMessage({
   compte.
 - Une conversation n'est accessible qu'à l'app qui l'a ouverte. `listAiMessages(sessionId)` la
   relit (ex. après rechargement de la page), du plus ancien au plus récent.
-- Erreurs : `ForbiddenError` si le commerce n'a pas configuré l'assistant ou que son modèle
-  n'est plus utilisable (**masquer le chat**), ou si le message est trop long ;
-  `NotFoundError` pour un `sessionId` inconnu ; `ConflictError` si la réponse précédente de la
-  conversation est encore en cours.
+- Erreurs — brancher sur `apiCode` (stable), jamais sur `message` :
+
+  | Classe | `apiCode` | Réaction |
+  |---|---|---|
+  | `ForbiddenError` | `AI_CHAT_NOT_CONFIGURED` | Assistant non configuré par le commerce — **masquer le chat** |
+  | `ForbiddenError` | `AI_MODEL_UNAVAILABLE` | Modèle du commerce plus utilisable — **masquer le chat** |
+  | `ForbiddenError` | `AI_MESSAGE_TOO_LONG` | Demander au visiteur de raccourcir son message |
+  | `NotFoundError` | `AI_SESSION_NOT_FOUND` | `sessionId` inconnu (ou d'une autre app) — démarrer une nouvelle conversation |
+  | `ConflictError` | `AI_REPLY_PENDING` | Réponse précédente encore en cours — attendre puis réessayer |
+
+  ```ts
+  try {
+    return await yodoo.sendAiMessage(params);
+  } catch (err) {
+    if (err instanceof DomainError) {
+      switch (err.apiCode) {
+        case "AI_CHAT_NOT_CONFIGURED":
+        case "AI_MODEL_UNAVAILABLE":
+          return hideChat();
+        case "AI_SESSION_NOT_FOUND":
+          return startNewConversation();
+      }
+    }
+    throw err;
+  }
+  ```
 - **Limiter le débit par visiteur (IP…) côté site** : Yodoo ne voit que le serveur de l'app,
   seules les limites du commerce s'appliquent de son côté.
 
@@ -337,8 +359,8 @@ même projet Firebase, dont la config web publique s'obtient via `getPushConfig(
 - Seuls les jetons rattachés à un client (`visitor` fourni, identité déclarée — même règle que
   le chat IA) sont atteints par les campagnes ; un jeton anonyme reste inscrit en attendant que
   le visiteur se présente. Renvoyé avec un autre `visitor`, le jeton change de client.
-- `ForbiddenError` sur `registerPushDevice` : le commerce a atteint sa limite d'appareils
-  inscrits (seul un nouveau jeton est refusé, les jetons connus se rafraîchissent toujours).
+- `ForbiddenError` (`apiCode` `PUSH_DEVICE_LIMIT`) sur `registerPushDevice` : le commerce a
+  atteint sa limite d'appareils inscrits — ne plus proposer les notifications (seul un nouveau jeton est refusé, les jetons connus se rafraîchissent toujours).
 - Sur iOS, le web push ne fonctionne que dans une **PWA installée** (« Sur l'écran
   d'accueil »), pas dans Safari directement.
 - Les `data` de la notification reçue portent `type: "CAMPAIGN"`, `id` / `publicId` (la
@@ -354,7 +376,8 @@ Les erreurs HTTP sont converties en instances typées de `DomainError` :
 un vrai incident côté Yodoo, jamais une requête invalide).
 
 Chaque erreur expose aussi `status` (statut HTTP), `fields` (champs fautifs d'un `400`, ou
-paramètre de requête en cause) et `apiCode` (code stable renvoyé par Yodoo, quand il existe).
+paramètre de requête en cause) et `apiCode` (code stable renvoyé par Yodoo, quand il existe —
+type `ApiErrorCode`, ex. `AI_CHAT_NOT_CONFIGURED`, `PUSH_DEVICE_LIMIT`).
 **`message` est traduit selon l'option `language` et son texte peut changer** : l'afficher, mais
 ne jamais brancher de logique dessus — uniquement sur la classe d'erreur, `status` et `apiCode`.
 `sync()` / `syncMain()` / `syncOthers()` peuvent en plus lever `SyncProtocolError` (aussi une
@@ -477,7 +500,8 @@ npm run typecheck
   - erreurs : Yodoo renvoie désormais le vrai statut de nombreuses erreurs côté client
     auparavant signalées en `500`. Nouvelles classes `ConflictError` (409),
     `PayloadTooLargeError` (413) et `ClientError` (autres `4xx`) — un `409` levait jusqu'ici
-    `ServerError`. Toute `DomainError` expose `status` et `apiCode`.
+    `ServerError`. Toute `DomainError` expose `status` et `apiCode` ; les erreurs du chat IA et
+    des notifications push portent un `apiCode` stable (type `ApiErrorCode`).
   - `createOrder` : la commande naît `PENDING`, `finalPrice` devient
     facultatif ; sans `offlineAuthorizationCode`, c'est une vente anonyme (`customer: null`) au
     lieu d'être attribuée au profil du commerce ; nouveau paramètre `options` (`id`, `createdAt`)

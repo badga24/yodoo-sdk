@@ -17,6 +17,7 @@ export {
   RateLimitedError,
   ServerError,
   SyncProtocolError,
+  type ApiErrorCode,
 } from "./errors.js";
 
 export { formatMoney } from "./money.js";

@@ -4,6 +4,7 @@ import { TokenProvider } from "./token-provider.js";
 import {
   ClientError,
   ConflictError,
+  ForbiddenError,
   PayloadTooLargeError,
   RateLimitedError,
   ServerError,
@@ -149,5 +150,19 @@ describe("HttpClient language, 204 and errors", () => {
 
     expect(error).toBeInstanceOf(type);
     expect(error).toMatchObject({ status, apiCode: "SYNC_CONFLICT", message: "msg" });
+  });
+
+  it("exposes the stable code of an AI chat 403 as apiCode", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ message: "Chat indisponible", code: "AI_CHAT_NOT_CONFIGURED" }), {
+        status: 403,
+      })
+    );
+    const { http } = client();
+
+    const error = await http.post("/ai/chat", {}).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ForbiddenError);
+    expect(error).toMatchObject({ status: 403, apiCode: "AI_CHAT_NOT_CONFIGURED" });
   });
 });
